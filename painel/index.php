@@ -44,22 +44,11 @@ $maq = db()->query(
           SUM(origem='dongle')                                   AS dongle
      FROM maquinas")->fetch();
 
-// ---- emissao por mes (12 meses) -------------------------------------
-$stEmis = db()->prepare(
-  "SELECT DATE_FORMAT(emitido_em,'%Y-%m') AS mes, COUNT(*) AS n
-     FROM licencas
-    WHERE emitido_em >= DATE_SUB(DATE_FORMAT(CURDATE(),'%Y-%m-01'), INTERVAL 11 MONTH)
-    GROUP BY mes ORDER BY mes");
-$stEmis->execute();
-$emisRaw = [];
-foreach ($stEmis->fetchAll() as $r) $emisRaw[$r['mes']] = (int)$r['n'];
-
-// preenche meses vazios (senao o grafico "pula" periodos sem venda)
-$labMes = []; $datMes = [];
+// ---- rotulos dos ultimos 12 meses ------------------------------------
+// preenchidos mesmo sem emissao, senao o grafico "pula" periodos vazios
+$labMes = [];
 for ($i = 11; $i >= 0; $i--) {
-    $m = date('Y-m', strtotime("-$i month"));
-    $labMes[] = date('m/y', strtotime($m.'-01'));
-    $datMes[] = $emisRaw[$m] ?? 0;
+    $labMes[] = date('m/y', strtotime(date('Y-m', strtotime("-$i month")).'-01'));
 }
 
 // ---- emissao por ano -------------------------------------------------
@@ -89,6 +78,47 @@ $porProd = db()->query(
   "SELECT COALESCE(p.nome,'(sem produto)') AS nome, COUNT(*) AS n
      FROM licencas l LEFT JOIN produtos p ON p.id=l.produto_id
     GROUP BY nome ORDER BY n DESC")->fetchAll();
+
+// ---- por tier (o "tipo de licenca" da tela de emissao) ---------------
+$porTier = db()->query(
+  "SELECT CONCAT(UPPER(COALESCE(p.codigo,'?')),' - ',
+                 COALESCE(t.nome,'(sem tipo)')) AS nome,
+          COUNT(*) AS n
+     FROM licencas l
+     LEFT JOIN tiers t    ON t.id = l.tier_id
+     LEFT JOIN produtos p ON p.id = l.produto_id
+    GROUP BY nome ORDER BY n DESC")->fetchAll();
+
+// ---- emissao mensal separada por tier (barras empilhadas) ------------
+$tiersLista = db()->query(
+  "SELECT DISTINCT COALESCE(t.nome,'(sem tipo)') AS nome
+     FROM licencas l LEFT JOIN tiers t ON t.id=l.tier_id
+    ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
+
+$stMT = db()->query(
+  "SELECT DATE_FORMAT(l.emitido_em,'%Y-%m') AS mes,
+          COALESCE(t.nome,'(sem tipo)') AS tier, COUNT(*) AS n
+     FROM licencas l LEFT JOIN tiers t ON t.id=l.tier_id
+    WHERE l.emitido_em >= DATE_SUB(DATE_FORMAT(CURDATE(),'%Y-%m-01'), INTERVAL 11 MONTH)
+    GROUP BY mes, tier")->fetchAll();
+$mtRaw = [];
+foreach ($stMT as $r) $mtRaw[$r['mes']][$r['tier']] = (int)$r['n'];
+
+// uma serie por tier, com zero nos meses sem emissao
+$seriesTier = [];
+foreach ($tiersLista as $tn) {
+    $linha = [];
+    for ($i = 11; $i >= 0; $i--) {
+        $m = date('Y-m', strtotime("-$i month"));
+        $linha[] = $mtRaw[$m][$tn] ?? 0;
+    }
+    $seriesTier[] = ['nome' => $tn, 'dados' => $linha];
+}
+
+// ---- venda x demonstracao -------------------------------------------
+$porTipoLic = db()->query(
+  "SELECT tipo_licenca, COUNT(*) AS n FROM licencas
+    GROUP BY tipo_licenca ORDER BY n DESC")->fetchAll();
 
 // ---- por revendedor --------------------------------------------------
 $porRev = db()->query(
@@ -150,7 +180,7 @@ abre_pagina('Painel', 'painel');
 </div>
 
 <div class="card">
-  <h3>Licenças emitidas por mês</h3>
+  <h3>Licenças emitidas por mês, por tipo</h3>
   <canvas id="gEmissao" height="90"></canvas>
 </div>
 
@@ -162,6 +192,17 @@ abre_pagina('Painel', 'painel');
   <div class="card">
     <h3>Por software</h3>
     <canvas id="gProduto" height="150"></canvas>
+  </div>
+</div>
+
+<div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+  <div class="card">
+    <h3>Por tipo de licença</h3>
+    <canvas id="gTier" height="120"></canvas>
+  </div>
+  <div class="card">
+    <h3>Venda x demonstração</h3>
+    <canvas id="gTipoLic" height="185"></canvas>
   </div>
 </div>
 
@@ -267,15 +308,57 @@ Chart.defaults.font.size = 11;
 const grade = { grid: { color: BORDA }, ticks: { color: CINZA } };
 const semLegenda = { legend: { display: false } };
 
+// paleta ciclica: cobre qualquer numero de tiers sem cor repetida perto
+const PALETA = [AMBAR, AZUL, VERDE, VERM, '#9b7fd4', '#4ec9c0', '#d4884a'];
+
+const seriesTier = <?= json_encode($seriesTier) ?>;
 new Chart(document.getElementById('gEmissao'), {
   type: 'bar',
   data: {
     labels: <?= json_encode($labMes) ?>,
-    datasets: [{ label: 'Licenças', data: <?= json_encode($datMes) ?>,
-                 backgroundColor: AMBAR, borderRadius: 3 }]
+    datasets: seriesTier.map((s, i) => ({
+      label: s.nome, data: s.dados,
+      backgroundColor: PALETA[i % PALETA.length], borderRadius: 3
+    }))
   },
-  options: { plugins: semLegenda, scales: { x: grade,
-             y: { ...grade, beginAtZero: true, ticks: { precision: 0, color: CINZA } } } }
+  options: {
+    plugins: { legend: { position: 'bottom' } },
+    scales: {
+      x: { ...grade, stacked: true },
+      y: { ...grade, stacked: true, beginAtZero: true,
+           ticks: { precision: 0, color: CINZA } }
+    }
+  }
+});
+
+new Chart(document.getElementById('gTier'), {
+  type: 'bar',
+  data: {
+    labels: <?= json_encode(array_column($porTier,'nome')) ?>,
+    datasets: [{ data: <?= json_encode(array_map('intval', array_column($porTier,'n'))) ?>,
+                 backgroundColor: PALETA, borderRadius: 3 }]
+  },
+  options: {
+    indexAxis: 'y',
+    plugins: semLegenda,
+    scales: { x: { ...grade, beginAtZero: true, ticks: { precision: 0, color: CINZA } },
+              y: grade }
+  }
+});
+
+new Chart(document.getElementById('gTipoLic'), {
+  type: 'doughnut',
+  data: {
+    labels: <?= json_encode(array_map(
+        fn($r) => $r['tipo_licenca']==='demo' ? 'Demonstração' : 'Venda',
+        $porTipoLic)) ?>,
+    datasets: [{ data: <?= json_encode(array_map('intval', array_column($porTipoLic,'n'))) ?>,
+                 backgroundColor: <?= json_encode(array_map(
+                     fn($r) => $r['tipo_licenca']==='demo' ? '#4a9fd4' : '#38b26b',
+                     $porTipoLic)) ?>,
+                 borderColor: '#1c2126', borderWidth: 2 }]
+  },
+  options: { plugins: { legend: { position: 'bottom' } } }
 });
 
 new Chart(document.getElementById('gAno'), {

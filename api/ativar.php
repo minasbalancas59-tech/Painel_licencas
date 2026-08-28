@@ -111,6 +111,7 @@ try {
         ]);
     }
 
+    registra_maquina_ativacao($fp, $lic['id'], $lic['cliente_id']);
     log_acao($lic['id'], $chave, $fp, 'ativar_online', 'ok',
              trim(($lic['produto_codigo'] ?? '').' '.($lic['tier_codigo'] ?? '')));
     responde([
@@ -128,4 +129,40 @@ try {
 } catch (Throwable $e) {
     log_acao(null, $chave, $fp, 'ativar_online', 'erro', $e->getMessage());
     responde(['ok' => false, 'erro' => 'Erro interno. Tente novamente mais tarde.'], 500);
+}
+
+/**
+ * Cria/atualiza a maquina no momento da ativacao.
+ * A ativacao so recebe { chave, fingerprint }, entao maq_nome/usuario/so
+ * ficam NULL e sao preenchidos depois pelo ping.php. Os COALESCE abaixo
+ * garantem que uma ativacao NUNCA apague o que os pings ja coletaram.
+ */
+function registra_maquina_ativacao($fp, $licId, $cliId, $origem = 'licenca')
+{
+    $fp = trim((string)$fp);
+    if ($fp === '' || preg_match('/^TS[0-9A-Z]{2}-/i', $fp)) {
+        return false;   // vazio, ou uma CHAVE colada no campo errado
+    }
+    try {
+        $st = db()->prepare(
+            'INSERT INTO maquinas
+               (fingerprint, licenca_id, cliente_id, maq_nome, maq_usuario,
+                maq_so, origem, primeiro_acesso, ultimo_acesso, aberturas,
+                ip_ultimo)
+             VALUES (?,?,?, NULL, NULL, NULL, ?, NOW(), NOW(), 0, ?)
+             ON DUPLICATE KEY UPDATE
+               licenca_id    = COALESCE(VALUES(licenca_id), licenca_id),
+               cliente_id    = COALESCE(VALUES(cliente_id), cliente_id),
+               maq_nome      = COALESCE(maq_nome,    VALUES(maq_nome)),
+               maq_usuario   = COALESCE(maq_usuario, VALUES(maq_usuario)),
+               maq_so        = COALESCE(maq_so,      VALUES(maq_so)),
+               origem        = COALESCE(VALUES(origem), origem),
+               ultimo_acesso = NOW(),
+               ip_ultimo     = VALUES(ip_ultimo)');
+        $st->execute([$fp, $licId, $cliId, $origem,
+                      $_SERVER['REMOTE_ADDR'] ?? null]);
+        return true;
+    } catch (Throwable $e) {
+        return false;   // nunca deixa o registro derrubar uma ativacao valida
+    }
 }

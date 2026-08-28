@@ -13,21 +13,37 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $email = mb_strtolower(trim($_POST['email'] ?? ''));
     $senha = $_POST['senha'] ?? '';
 
+    // --- freio de forca bruta: 5 falhas do mesmo IP em 10 minutos ---
+    $ipReq = $_SERVER['REMOTE_ADDR'] ?? '';
+    $stT = db()->prepare(
+        "SELECT COUNT(*) FROM ativacoes_log
+          WHERE acao='login' AND resultado='negado' AND ip=?
+            AND criado_em > (NOW() - INTERVAL 10 MINUTE)");
+    $stT->execute([$ipReq]);
+    $bloqueado = ((int)$stT->fetchColumn() >= 5);
+
     $st = db()->prepare('SELECT * FROM usuarios WHERE LOWER(email)=? AND ativo=1 LIMIT 1');
     $st->execute([$email]);
     $u = $st->fetch();
 
-    if ($u && password_verify($senha, $u['senha_hash'])) {
+    if (!$bloqueado && $u && password_verify($senha, $u['senha_hash'])) {
         session_regenerate_id(true);
         $_SESSION['usuario'] = [
             'id' => $u['id'], 'nome' => $u['nome'],
             'email' => $u['email'], 'papel' => $u['papel'],
         ];
         $_SESSION['ultimo_acesso'] = time();
+        log_acao(null, null, null, 'login', 'ok', $u['email']);
         header('Location: index.php');
         exit;
     }
-    $erro = 'E-mail ou senha incorretos.';
+    if ($bloqueado) {
+        $erro = 'Muitas tentativas seguidas. Aguarde 10 minutos e tente de novo.';
+    } else {
+        log_acao(null, null, null, 'login', 'negado',
+                 'tentativa falhou: ' . mb_substr($email, 0, 80));
+        $erro = 'E-mail ou senha incorretos.';
+    }
 }
 function e2($s){ return htmlspecialchars($s, ENT_QUOTES, 'UTF-8'); }
 ?><!DOCTYPE html>

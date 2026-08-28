@@ -9,10 +9,14 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='gerar') {
     if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
     else {
         $chave = strtoupper(trim($_POST['chave'] ?? ''));
-        $fp    = trim($_POST['fingerprint'] ?? '');
+        $fp    = strtoupper(preg_replace('/\s+/', '', $_POST['fingerprint'] ?? ''));
         $u     = usuario_logado();
 
         if ($chave==='' || $fp==='') { $msg='Informe a chave e o código da máquina.'; $tipo='erro'; }
+        elseif (preg_match('/^TS[0-9A-Z]{2}-/', $fp)) {
+            $msg='O campo "Codigo da maquina" recebeu uma CHAVE de licenca - os dois campos estao trocados.'; $tipo='erro'; }
+        elseif (!preg_match('/^[0-9A-F]{4}(-[0-9A-F]{4})+$/', $fp)) {
+            $msg='Codigo da maquina em formato invalido. Esperado grupos de 4 caracteres (0-9, A-F) separados por hifen.'; $tipo='erro'; }
         else {
             $st = db()->prepare(
               'SELECT l.*, c.razao_social, c.cnpj,
