@@ -33,6 +33,49 @@ if ($rev !== null && (int)$cli['revendedor_id'] !== $rev) {
     exit('Este cliente não pertence a você.');
 }
 
+// ---- contatos: adicionar / remover / marcar principal ---------------
+$msgC=''; $tipoC='';
+if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
+    $ac = $_POST['acao'] ?? '';
+
+    if ($ac === 'contato_novo') {
+        $nome = trim($_POST['c_nome'] ?? '');
+        if ($nome === '') { $msgC='Informe o nome do contato.'; $tipoC='erro'; }
+        else {
+            db()->prepare(
+              'INSERT INTO cliente_contatos
+                 (cliente_id,nome,cargo,telefone,email,observacao)
+               VALUES (?,?,?,?,?,?)')
+              ->execute([$id, $nome,
+                         (trim($_POST['c_cargo'] ?? '') ?: null),
+                         (trim($_POST['c_telefone'] ?? '') ?: null),
+                         (trim($_POST['c_email'] ?? '') ?: null),
+                         (trim($_POST['c_obs'] ?? '') ?: null)]);
+            $msgC='Contato adicionado.'; $tipoC='ok';
+        }
+    }
+    elseif ($ac === 'contato_remove') {
+        // o cliente_id no WHERE impede remover contato de outro cliente
+        db()->prepare('DELETE FROM cliente_contatos WHERE id=? AND cliente_id=?')
+            ->execute([(int)$_POST['c_id'], $id]);
+        $msgC='Contato removido.'; $tipoC='ok';
+    }
+    elseif ($ac === 'contato_principal') {
+        db()->prepare('UPDATE cliente_contatos SET principal=0 WHERE cliente_id=?')
+            ->execute([$id]);
+        db()->prepare('UPDATE cliente_contatos SET principal=1 WHERE id=? AND cliente_id=?')
+            ->execute([(int)$_POST['c_id'], $id]);
+        $msgC='Contato principal atualizado.'; $tipoC='ok';
+    }
+}
+
+// ---- contatos do cliente --------------------------------------------
+$stCt = db()->prepare(
+  'SELECT * FROM cliente_contatos WHERE cliente_id=?
+    ORDER BY principal DESC, nome');
+$stCt->execute([$id]);
+$contatos = $stCt->fetchAll();
+
 // ---- filtros --------------------------------------------------------
 $fStatus  = trim($_GET['status'] ?? '');
 $fProduto = trim($_GET['produto'] ?? '');
@@ -155,6 +198,15 @@ function tempoAtras($dt) {
     return date('d/m/Y', strtotime($dt));
 }
 
+// URL atual (com filtros) para os forms de contato nao perderem o estado
+function urlAtual() {
+    $base = [];
+    foreach (['id','status','produto','dias'] as $k) {
+        if (isset($_GET[$k]) && $_GET[$k] !== '') $base[$k] = $_GET[$k];
+    }
+    return 'cliente.php?'.http_build_query($base);
+}
+
 function linkFiltro(array $novo) {
     // repassa apenas os filtros conhecidos - $_GET inteiro carregaria
     // qualquer parametro estranho colado na URL
@@ -177,13 +229,93 @@ $ROTULO_MOTIVO = [
 abre_pagina('Cliente', 'clientes');
 ?>
 <p class="subtitulo" style="margin-bottom:4px"><a href="clientes.php">‹ Clientes</a></p>
-<h1 class="titulo"><?= e($cli['razao_social']) ?></h1>
+<h1 class="titulo"><?= e($cli['nome_fantasia'] ?: $cli['razao_social']) ?></h1>
 <p class="subtitulo">
+  <?php if ($cli['nome_fantasia']): ?><?= e($cli['razao_social']) ?> · <?php endif; ?>
   <?= e($cli['cnpj'] ?: 'sem CNPJ') ?>
-  <?= $cli['contato']  ? ' · '.e($cli['contato'])  : '' ?>
-  <?= $cli['telefone'] ? ' · '.e($cli['telefone']) : '' ?>
-  <?= $cli['email']    ? ' · '.e($cli['email'])    : '' ?>
+  <?php if (!empty($cli['municipio'])): ?>
+    · <?= e($cli['municipio']) ?><?= $cli['uf'] ? '/'.e($cli['uf']) : '' ?>
+  <?php endif; ?>
 </p>
+
+<?php if ($msgC): ?><div class="aviso <?= $tipoC ?>"><?= e($msgC) ?></div><?php endif; ?>
+
+<div class="card">
+  <h3>Contatos (<?= count($contatos) ?>)</h3>
+  <table>
+    <thead><tr>
+      <th>Nome</th><th>Cargo</th><th>Telefone</th><th>E-mail</th>
+      <th>Observação</th><th></th>
+    </tr></thead>
+    <tbody>
+    <?php if (!$contatos): ?>
+      <tr><td colspan="6" style="color:var(--texto-2)">Nenhum contato cadastrado.</td></tr>
+    <?php else: foreach ($contatos as $ct): ?>
+      <tr>
+        <td>
+          <b><?= e($ct['nome']) ?></b>
+          <?php if ($ct['principal']): ?>
+            <span class="badge ativa" style="font-size:10px">principal</span>
+          <?php endif; ?>
+        </td>
+        <td style="font-size:12px"><?= e($ct['cargo'] ?: '—') ?></td>
+        <td class="mono" style="font-size:12px"><?= e($ct['telefone'] ?: '—') ?></td>
+        <td style="font-size:12px">
+          <?php if ($ct['email']): ?>
+            <a href="mailto:<?= e($ct['email']) ?>"><?= e($ct['email']) ?></a>
+          <?php else: ?>—<?php endif; ?>
+        </td>
+        <td style="font-size:11px;color:var(--texto-2)"><?= e($ct['observacao'] ?: '') ?></td>
+        <td style="white-space:nowrap">
+          <?php if (!$ct['principal']): ?>
+            <form method="post" action="<?= e(urlAtual()) ?>" style="display:inline">
+              <input type="hidden" name="acao" value="contato_principal">
+              <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+              <input type="hidden" name="c_id" value="<?= $ct['id'] ?>">
+              <input type="hidden" name="id" value="<?= $id ?>">
+              <button class="btn sec pequeno">Tornar principal</button>
+            </form>
+          <?php endif; ?>
+          <form method="post" action="<?= e(urlAtual()) ?>" style="display:inline"
+                onsubmit="return confirm('Remover este contato?')">
+            <input type="hidden" name="acao" value="contato_remove">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <input type="hidden" name="c_id" value="<?= $ct['id'] ?>">
+            <input type="hidden" name="id" value="<?= $id ?>">
+            <button class="btn perigo pequeno">Remover</button>
+          </form>
+        </td>
+      </tr>
+    <?php endforeach; endif; ?>
+    </tbody>
+  </table>
+
+  <button type="button" class="btn sec" style="margin-top:14px"
+          onclick="var b=document.getElementById('boxContato');
+                   b.style.display = b.style.display==='none' ? '' : 'none';">
+    + Adicionar contato
+  </button>
+
+  <div id="boxContato" style="display:none;margin-top:16px;
+       border-top:1px solid var(--borda);padding-top:16px">
+    <form method="post" action="<?= e(urlAtual()) ?>">
+      <input type="hidden" name="acao" value="contato_novo">
+      <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+      <input type="hidden" name="id" value="<?= $id ?>">
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+        <div><label>Nome *</label><input name="c_nome" required></div>
+        <div><label>Cargo / setor</label>
+          <input name="c_cargo" placeholder="ex: Operador, TI, Financeiro"></div>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:12px">
+        <div><label>Telefone</label><input name="c_telefone"></div>
+        <div><label>E-mail</label><input name="c_email" type="email"></div>
+        <div><label>Observação</label><input name="c_obs"></div>
+      </div>
+      <button class="btn" style="margin-top:12px">Adicionar contato</button>
+    </form>
+  </div>
+</div>
 
 <div class="stats">
   <div class="stat"><div class="n"><?= (int)$resumo['total'] ?></div><div class="l">Licenças</div></div>
