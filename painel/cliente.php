@@ -148,6 +148,48 @@ $stp = db()->prepare(
 $stp->execute([$id]);
 $produtosCli = $stp->fetchAll(PDO::FETCH_COLUMN);
 
+// ---- o que o cliente possui (tiers distintos, so os validos) --------
+// Agrupa por produto+tier: e a resposta para "o que esse cliente tem
+// contratado", que a lista de chaves individuais nao da de imediato.
+$stPos = db()->prepare(
+  "SELECT p.codigo AS produto, t.nome AS tier, t.nivel,
+          COUNT(*) AS qtd,
+          SUM(l.status='ativa') AS ativas,
+          MAX(l.expira_em) AS maior_validade
+     FROM licencas l
+     LEFT JOIN produtos p ON p.id = l.produto_id
+     LEFT JOIN tiers    t ON t.id = l.tier_id
+    WHERE l.cliente_id = ? AND l.status <> 'revogada'
+    GROUP BY p.codigo, t.nome, t.nivel
+    ORDER BY p.codigo, t.nivel DESC");
+$stPos->execute([$id]);
+$possui = $stPos->fetchAll();
+
+// ---- relacionamento: desde quando, e quem atende ---------------------
+$stRel = db()->prepare(
+  "SELECT MIN(l.emitido_em) AS primeira_licenca,
+          SUM(l.transferencias) AS transferencias,
+          MAX(l.max_transferencias) AS max_transf
+     FROM licencas l WHERE l.cliente_id = ?");
+$stRel->execute([$id]);
+$rel = $stRel->fetch();
+
+$revNome = null;
+if (!empty($cli['revendedor_id'])) {
+    $stRv = db()->prepare('SELECT nome FROM usuarios WHERE id=?');
+    $stRv->execute([$cli['revendedor_id']]);
+    $revNome = $stRv->fetchColumn() ?: null;
+}
+
+// ---- historico de eventos deste cliente ------------------------------
+$stEv = db()->prepare(
+  "SELECT a.* FROM ativacoes_log a
+     JOIN licencas l ON l.id = a.licenca_id
+    WHERE l.cliente_id = ?
+    ORDER BY a.id DESC LIMIT 25");
+$stEv->execute([$id]);
+$eventos = $stEv->fetchAll();
+
 // ---- resumo ---------------------------------------------------------
 $resumo = db()->prepare(
   "SELECT COUNT(*) AS total,
@@ -228,6 +270,60 @@ for ($h = 0; $h < 24; $h++) $datHora[] = $horaRaw[$h] ?? 0;
 
 $totalAberturas = array_sum($datDia);
 
+// ---- alertas: o que merece atencao neste cliente ---------------------
+// A lista de clientes mostra quem existe; estes avisos mostram quem
+// precisa de uma ligacao.
+$alertas = [];
+
+// 1) licenca vencendo
+$stAl = db()->prepare(
+  "SELECT COUNT(*) FROM licencas
+    WHERE cliente_id=? AND status='ativa'
+      AND expira_em BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
+$stAl->execute([$id]);
+if ($n = (int)$stAl->fetchColumn()) {
+    $alertas[] = ['ambar', "$n licença(s) vencem nos próximos 30 dias."];
+}
+
+// 2) licenca vencida ainda sem renovacao
+$stAl = db()->prepare(
+  "SELECT COUNT(*) FROM licencas
+    WHERE cliente_id=? AND status='ativa' AND expira_em < CURDATE()");
+$stAl->execute([$id]);
+if ($n = (int)$stAl->fetchColumn()) {
+    $alertas[] = ['vermelho', "$n licença(s) já venceram e não foram renovadas."];
+}
+
+// 3) sumico: parou de abrir o sistema
+$stAl = db()->prepare(
+  "SELECT DATEDIFF(NOW(), MAX(ultimo_acesso)) FROM maquinas WHERE cliente_id=?");
+$stAl->execute([$id]);
+$diasSumido = $stAl->fetchColumn();
+if ($diasSumido !== null && $diasSumido !== false && (int)$diasSumido > 30) {
+    $alertas[] = ['vermelho',
+        'Sem abrir o sistema há '.(int)$diasSumido.' dias. '
+       .'Pode ser desinstalação, troca de fornecedor ou máquina parada.'];
+}
+
+// 4) licenca emitida que nunca foi ativada
+$stAl = db()->prepare(
+  "SELECT COUNT(*) FROM licencas
+    WHERE cliente_id=? AND fingerprint IS NULL AND status <> 'revogada'");
+$stAl->execute([$id]);
+if ($n = (int)$stAl->fetchColumn()) {
+    $alertas[] = ['azul', "$n licença(s) emitidas mas nunca ativadas."];
+}
+
+// 5) transferencias perto do limite
+if ((int)$rel['transferencias'] > 0) {
+    $restam = (int)$rel['max_transf'] - (int)$rel['transferencias'];
+    if ($restam <= 1) {
+        $alertas[] = ['ambar',
+            'Limite de transferências quase esgotado ('
+           .(int)$rel['transferencias'].' de '.(int)$rel['max_transf'].' usadas).'];
+    }
+}
+
 function tempoAtras($dt) {
     if (!$dt) return '—';
     $diff = time() - strtotime($dt);
@@ -257,6 +353,19 @@ function linkFiltro(array $novo) {
     return 'cliente.php?'.http_build_query(array_merge($base, $novo));
 }
 
+$ROTULO_EVENTO = [
+    'emitir'             => 'Licença emitida',
+    'ativar'             => 'Ativada na máquina',
+    'revalidar'          => 'Revalidação online',
+    'revogar'            => 'Revogada',
+    'vincular_cliente'   => 'Vinculada ao cliente',
+    'liberar_maquina'    => 'Máquina liberada',
+    'atribuir_revendedor'=> 'Atribuída a revendedor',
+    'solicitar_troca'    => 'Troca solicitada',
+    'aprovar_troca'      => 'Troca aprovada',
+    'negar_troca'        => 'Troca negada',
+];
+
 $ROTULO_MOTIVO = [
     'inadimplencia' => 'Inadimplência',
     'cancelamento'  => 'Cancelamento pelo cliente',
@@ -277,6 +386,53 @@ abre_pagina('Cliente', 'clientes');
     · <?= e($cli['municipio']) ?><?= $cli['uf'] ? '/'.e($cli['uf']) : '' ?>
   <?php endif; ?>
 </p>
+
+<?php if ($possui): ?>
+<div style="margin:-14px 0 20px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+  <?php foreach ($possui as $pp):
+      $rot = strtoupper($pp['produto'] ?? '?').' · '.($pp['tier'] ?: 'sem tipo');
+      $cls = (int)$pp['ativas'] > 0 ? 'ativa' : 'expirada';
+  ?>
+    <span class="badge <?= $cls ?>" style="font-size:12px;padding:5px 10px">
+      <?= e($rot) ?>
+      <?php if ((int)$pp['qtd'] > 1): ?>
+        <span style="opacity:.7">×<?= (int)$pp['qtd'] ?></span>
+      <?php endif; ?>
+    </span>
+  <?php endforeach; ?>
+</div>
+<?php endif; ?>
+
+<div class="card" style="padding:12px 18px;margin-bottom:20px">
+  <div style="display:flex;gap:28px;flex-wrap:wrap;font-size:12px">
+    <div>
+      <span style="color:var(--texto-2)">Cliente desde</span><br>
+      <b><?= $rel['primeira_licenca']
+              ? date('m/Y', strtotime($rel['primeira_licenca']))
+              : '—' ?></b>
+    </div>
+    <div>
+      <span style="color:var(--texto-2)">Atendido por</span><br>
+      <b><?= e($revNome ?: 'Venda direta') ?></b>
+    </div>
+    <div>
+      <span style="color:var(--texto-2)">Transferências</span><br>
+      <b><?= (int)$rel['transferencias'] ?> de <?= (int)($rel['max_transf'] ?: 3) ?></b>
+    </div>
+    <div>
+      <span style="color:var(--texto-2)">Último acesso</span><br>
+      <b><?= $diasSumido === null || $diasSumido === false
+              ? '—' : ((int)$diasSumido === 0 ? 'hoje' : (int)$diasSumido.' dias atrás') ?></b>
+    </div>
+  </div>
+</div>
+
+<?php foreach ($alertas as $al): ?>
+  <div class="card" style="padding:10px 16px;margin-bottom:10px;
+       border-left:3px solid var(--<?= $al[0] ?>)">
+    <span style="font-size:13px"><?= e($al[1]) ?></span>
+  </div>
+<?php endforeach; ?>
 
 <?php if ($msgC): ?><div class="aviso <?= $tipoC ?>"><?= e($msgC) ?></div><?php endif; ?>
 
@@ -590,6 +746,38 @@ abre_pagina('Cliente', 'clientes');
         <td class="mono" style="font-size:11px"><?= e($prodTier) ?></td>
         <td class="mono"><?= (int)$m['aberturas'] ?></td>
         <td style="font-size:12px"><?= e(tempoAtras($m['ultimo_acesso'])) ?></td>
+      </tr>
+    <?php endforeach; endif; ?>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Histórico deste cliente</h3>
+  <p class="subtitulo" style="margin-top:-6px">
+    Últimos 25 eventos: emissões, ativações, revogações e transferências
+  </p>
+  <table>
+    <thead><tr>
+      <th>Quando</th><th>Evento</th><th>Chave</th>
+      <th>Quem</th><th>Detalhe</th><th>Resultado</th>
+    </tr></thead>
+    <tbody>
+    <?php if (!$eventos): ?>
+      <tr><td colspan="6" style="color:var(--texto-2)">Nenhum evento registrado.</td></tr>
+    <?php else: foreach ($eventos as $ev):
+        $cor = $ev['resultado']==='ok' ? 'ativa'
+             : ($ev['resultado']==='negado' ? 'revogada' : 'expirada');
+    ?>
+      <tr>
+        <td class="mono" style="font-size:11px">
+          <?= date('d/m/Y H:i', strtotime($ev['criado_em'])) ?></td>
+        <td style="font-size:12px"><?= e($ROTULO_EVENTO[$ev['acao']] ?? $ev['acao']) ?></td>
+        <td class="mono" style="font-size:10px"><?= e($ev['chave'] ?: '—') ?></td>
+        <td style="font-size:11px"><?= e($ev['usuario_nome'] ?: 'sistema') ?></td>
+        <td style="font-size:11px;color:var(--texto-2)"><?= e($ev['detalhe'] ?: '') ?></td>
+        <td><span class="badge <?= $cor ?>" style="font-size:10px">
+          <?= e($ev['resultado']) ?></span></td>
       </tr>
     <?php endforeach; endif; ?>
     </tbody>

@@ -93,6 +93,13 @@ $st = db()->prepare(
             ORDER BY cc.principal DESC, cc.id LIMIT 1) AS contato_nome,
           (SELECT COUNT(*) FROM cliente_contatos cc
             WHERE cc.cliente_id=c.id) AS n_contatos,
+          (SELECT GROUP_CONCAT(DISTINCT
+                    CONCAT(UPPER(p.codigo),' ',t.nome)
+                    ORDER BY p.codigo SEPARATOR ' · ')
+             FROM licencas l
+             LEFT JOIN produtos p ON p.id=l.produto_id
+             LEFT JOIN tiers    t ON t.id=l.tier_id
+            WHERE l.cliente_id=c.id AND l.status='ativa') AS tiers,
           (SELECT COUNT(*) FROM licencas l WHERE l.cliente_id=c.id) AS n_lic,
           (SELECT COUNT(*) FROM licencas l
             WHERE l.cliente_id=c.id AND l.status='ativa') AS n_ativas,
@@ -208,11 +215,12 @@ abre_pagina($ehRev ? 'Meus clientes' : 'Clientes', 'clientes');
   <table>
     <thead><tr>
       <th>Cliente</th><th>CNPJ</th><th>Local</th><th>Contato</th>
-      <th>Licenças</th><th>Ativas</th><th>Visto por último</th><th></th>
+      <th>O que possui</th><th>Licenças</th><th>Ativas</th>
+      <th>Visto por último</th><th></th>
     </tr></thead>
     <tbody>
     <?php if (!$clientes): ?>
-      <tr><td colspan="8" style="color:var(--texto-2)">
+      <tr><td colspan="9" style="color:var(--texto-2)">
         <?= $busca !== '' ? 'Nenhum cliente encontrado.' : 'Nenhum cliente cadastrado.' ?>
       </td></tr>
     <?php else: foreach ($clientes as $c): ?>
@@ -235,6 +243,9 @@ abre_pagina($ehRev ? 'Meus clientes' : 'Clientes', 'clientes');
             <span style="font-size:10px;color:var(--texto-2)">
               +<?= (int)$c['n_contatos'] - 1 ?></span>
           <?php endif; ?>
+        </td>
+        <td style="font-size:11px;color:var(--texto-2);max-width:200px">
+          <?= e($c['tiers'] ?: '—') ?>
         </td>
         <td class="mono"><?= (int)$c['n_lic'] ?></td>
         <td class="mono" style="color:var(--verde)"><?= (int)$c['n_ativas'] ?></td>
