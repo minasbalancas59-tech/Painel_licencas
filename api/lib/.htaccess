@@ -1,0 +1,4 @@
+# Bloqueia acesso direto a esta pasta (config, chaves, biblioteca).
+# Vale para Apache. No nginx use a regra do nginx.conf.exemplo.
+Require all denied
+Deny from all

@@ -1,0 +1,5 @@
+api/lib/config.php
+*.bin
+*.log
+*.bak
+*.bak[0-9]
