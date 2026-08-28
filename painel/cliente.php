@@ -46,11 +46,12 @@ if ($fProduto !== '') { $wLic[] = 'p.codigo = ?';  $aLic[] = $fProduto; }
 
 $stl = db()->prepare(
   'SELECT l.*, t.nome AS tier_nome, t.codigo AS tier_codigo,
-          p.codigo AS produto_codigo,
+          p.codigo AS produto_codigo, ur.nome AS revogada_por_nome,
           DATEDIFF(l.expira_em, CURDATE()) AS dias_restantes
      FROM licencas l
      LEFT JOIN tiers t    ON t.id = l.tier_id
      LEFT JOIN produtos p ON p.id = l.produto_id
+     LEFT JOIN usuarios ur ON ur.id = l.revogada_por
     WHERE '.implode(' AND ', $wLic).'
     ORDER BY l.id DESC');
 $stl->execute($aLic);
@@ -164,6 +165,15 @@ function linkFiltro(array $novo) {
     return 'cliente.php?'.http_build_query(array_merge($base, $novo));
 }
 
+$ROTULO_MOTIVO = [
+    'inadimplencia' => 'Inadimplência',
+    'cancelamento'  => 'Cancelamento pelo cliente',
+    'troca_licenca' => 'Substituída por outra licença',
+    'uso_indevido'  => 'Uso indevido',
+    'erro_emissao'  => 'Erro na emissão',
+    'outro'         => 'Outro',
+];
+
 abre_pagina('Cliente', 'clientes');
 ?>
 <p class="subtitulo" style="margin-bottom:4px"><a href="clientes.php">‹ Clientes</a></p>
@@ -239,7 +249,22 @@ abre_pagina('Cliente', 'clientes');
             <br><span style="font-size:10px;color:var(--ambar)"><?= $dias ?> dias</span>
           <?php endif; ?>
         </td>
-        <td><span class="badge <?= e($l['status']) ?>"><?= e($l['status']) ?></span></td>
+        <td>
+          <span class="badge <?= e($l['status']) ?>"><?= e($l['status']) ?></span>
+          <?php if ($l['status']==='revogada'): ?>
+            <br><span style="font-size:10px;color:var(--texto-2)">
+              <?= e($ROTULO_MOTIVO[$l['motivo_revogacao']] ?? 'motivo não informado') ?>
+              <?php if ($l['revogada_em']): ?>
+                <br><?= date('d/m/Y', strtotime($l['revogada_em'])) ?>
+                <?= $l['revogada_por_nome'] ? '· '.e($l['revogada_por_nome']) : '' ?>
+              <?php endif; ?>
+            </span>
+            <?php if (!empty($l['obs_revogacao'])): ?>
+              <br><span style="font-size:10px;color:var(--texto-2);font-style:italic">
+                "<?= e($l['obs_revogacao']) ?>"</span>
+            <?php endif; ?>
+          <?php endif; ?>
+        </td>
         <td class="mono" style="font-size:10px">
           <?= $l['fingerprint'] ? e(substr($l['fingerprint'],0,14)).'…' : '— não ativada —' ?>
         </td>

@@ -1,7 +1,9 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
+require 'inc/escopo.php';
 exige_login();
+exige_admin_escopo();
 
 $msg=''; $tipo=''; $chaveGerada='';
 
@@ -14,52 +16,64 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         $meses    = (int)($_POST['meses'] ?? 12);
         $carencia = (int)($_POST['carencia'] ?? 15);
         $mods     = $_POST['modulos'] ?? [];
+        $revId    = (int)($_POST['revendedor_id'] ?? 0) ?: null;
+        $tipoLic  = ($_POST['tipo_licenca'] ?? 'venda') === 'demo' ? 'demo' : 'venda';
+        $qtd      = max(1, min(50, (int)($_POST['quantidade'] ?? 1)));
         $modsCsv  = implode(',', array_map(fn($m)=>preg_replace('/[^A-Z]/','',$m), $mods));
 
-        if ($cliId<=0)         { $msg='Selecione um cliente.'; $tipo='erro'; }
-        elseif ($tierId<=0)    { $msg='Selecione o software e o tipo de licença.'; $tipo='erro'; }
+        if ($tierId<=0)        { $msg='Selecione o software e o tipo de licença.'; $tipo='erro'; }
         elseif ($meses<=0)     { $msg='Validade inválida.'; $tipo='erro'; }
         else {
             try {
                 // resolve produto/tier/nivel a partir do tier escolhido
                 $t = resolver_tier($tierId);   // produto_codigo, tier_codigo, nivel...
 
-                // busca dados do cliente para o payload assinado
-                $cli = db()->prepare('SELECT razao_social,cnpj FROM clientes WHERE id=?');
-                $cli->execute([$cliId]);
-                $cliRow = $cli->fetch();
-                if (!$cliRow) throw new RuntimeException('Cliente não encontrado.');
+                // busca dados do cliente para o payload assinado.
+                // Licenca de estoque nasce sem cliente: quem preenche e o
+                // revendedor, ao vincular. So valida se um cliente foi escolhido.
+                $cliRow = null;
+                if ($cliId > 0) {
+                    $cli = db()->prepare('SELECT razao_social,cnpj FROM clientes WHERE id=?');
+                    $cli->execute([$cliId]);
+                    $cliRow = $cli->fetch();
+                    if (!$cliRow) throw new RuntimeException('Cliente não encontrado.');
+                }
 
-                $chave = gerar_chave_licenca();
                 $emit  = date('Y-m-d');
                 $exp   = date('Y-m-d', strtotime("+$meses months"));
                 $u     = usuario_logado();
+                $geradas = [];
 
-                // grava a licenca (fingerprint fica NULL ate a ativacao)
+                // grava a(s) licenca(s) - fingerprint fica NULL ate a ativacao
                 $st = db()->prepare(
                   'INSERT INTO licencas
-                     (cliente_id,produto_id,tier_id,chave,modulos,
-                      emitido_em,expira_em,carencia_dias,status,criado_por)
-                   VALUES (?,?,?,?,?,?,?,?,"nova",?)');
-                $st->execute([
-                    $cliId,
-                    $t['produto_id'],   // vem do JOIN em resolver_tier()
-                    $tierId, $chave, ($modsCsv ?: ''),
-                    $emit, $exp, $carencia, $u['id']
-                ]);
-                $licId = (int)db()->lastInsertId();
+                     (cliente_id,revendedor_id,produto_id,tier_id,chave,modulos,
+                      emitido_em,expira_em,carencia_dias,status,tipo_licenca,criado_por)
+                   VALUES (?,?,?,?,?,?,?,?,?,"nova",?,?)');
 
-                // registra na auditoria (quem emitiu, produto/tier)
-                log_acao_painel(
-                    $licId, $chave, null, 'emitir', 'ok',
-                    $u['id'], $u['nome'] ?? null,
-                    $t['produto_codigo'], $t['tier_codigo'],
-                    "validade {$meses}m, carencia {$carencia}d"
-                );
+                for ($i = 0; $i < $qtd; $i++) {
+                    $chave = gerar_chave_licenca();
+                    $st->execute([
+                        ($cliId ?: null), $revId,
+                        $t['produto_id'],   // vem do JOIN em resolver_tier()
+                        $tierId, $chave, ($modsCsv ?: ''),
+                        $emit, $exp, $carencia, $tipoLic, $u['id']
+                    ]);
+                    $licId = (int)db()->lastInsertId();
+                    $geradas[] = $chave;
 
-                $chaveGerada = $chave;
-                $msg = "Licença emitida ({$t['produto_codigo']} · {$t['tier_codigo']}). ".
-                       "Entregue a chave abaixo ao cliente para ativação.";
+                    log_acao_painel(
+                        $licId, $chave, null, 'emitir', 'ok',
+                        $u['id'], $u['nome'] ?? null,
+                        $t['produto_codigo'], $t['tier_codigo'],
+                        "validade {$meses}m, carencia {$carencia}d, {$tipoLic}"
+                        . ($revId ? ", revendedor {$revId}" : ''));
+                }
+
+                $chaveGerada = implode("\n", $geradas);
+                $msg = count($geradas) . " licença(s) emitida(s) "
+                     . "({$t['produto_codigo']} · {$t['tier_codigo']}"
+                     . ($tipoLic === 'demo' ? ' · demonstração' : '') . ").";
                 $tipo='ok';
             } catch (Throwable $ex) {
                 $msg='Erro ao emitir: '.$ex->getMessage(); $tipo='erro';
@@ -71,25 +85,58 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
 // --- revogar --------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='revogar') {
     if (csrf_valido()) {
-        $id=(int)$_POST['id'];
-        db()->prepare('UPDATE licencas SET status="revogada" WHERE id=?')->execute([$id]);
-        $u = usuario_logado();
-        // busca produto/tier da licenca para registrar no log
-        $lr = db()->prepare(
-          'SELECT l.chave, p.codigo AS pc, t.codigo AS tc
-             FROM licencas l
-             LEFT JOIN produtos p ON p.id=l.produto_id
-             LEFT JOIN tiers t    ON t.id=l.tier_id
-            WHERE l.id=?');
-        $lr->execute([$id]);
-        $lrow = $lr->fetch() ?: [];
-        log_acao_painel(
-            $id, $lrow['chave'] ?? null, null, 'revogar', 'ok',
-            $u['id'], $u['nome'] ?? null,
-            $lrow['pc'] ?? null, $lrow['tc'] ?? null, 'via painel');
-        $msg='Licença revogada.'; $tipo='ok';
+        $id = (int)$_POST['id'];
+
+        // motivo e obrigatorio: revogar sem registrar o porque deixa o
+        // suporte sem resposta quando o cliente liga perguntando
+        $motivosOk = ['inadimplencia','cancelamento','troca_licenca',
+                      'uso_indevido','erro_emissao','outro'];
+        $motivo = $_POST['motivo_revogacao'] ?? '';
+        $obs    = trim($_POST['obs_revogacao'] ?? '');
+
+        if (!in_array($motivo, $motivosOk, true)) {
+            $msg = 'Selecione o motivo da revogacao.'; $tipo = 'erro';
+        } elseif ($motivo === 'outro' && $obs === '') {
+            $msg = 'Para o motivo "Outro", descreva na observacao.';
+            $tipo = 'erro';
+        } else {
+            $u = usuario_logado();
+            db()->prepare(
+              'UPDATE licencas
+                  SET status="revogada", motivo_revogacao=?, obs_revogacao=?,
+                      revogada_em=NOW(), revogada_por=?
+                WHERE id=?')->execute([$motivo, ($obs ?: null), $u['id'], $id]);
+
+            // produto/tier da licenca, para registrar no log
+            $lr = db()->prepare(
+              'SELECT l.chave, p.codigo AS pc, t.codigo AS tc
+                 FROM licencas l
+                 LEFT JOIN produtos p ON p.id=l.produto_id
+                 LEFT JOIN tiers t    ON t.id=l.tier_id
+                WHERE l.id=?');
+            $lr->execute([$id]);
+            $lrow = $lr->fetch() ?: [];
+
+            log_acao_painel(
+                $id, $lrow['chave'] ?? null, null, 'revogar', 'ok',
+                $u['id'], $u['nome'] ?? null,
+                $lrow['pc'] ?? null, $lrow['tc'] ?? null,
+                'motivo: '.$motivo.($obs ? ' - '.$obs : ''));
+
+            $msg = 'Licenca revogada.'; $tipo = 'ok';
+        }
     }
 }
+
+// rotulos legiveis dos motivos (usados no form e na listagem)
+$ROTULO_MOTIVO = [
+    'inadimplencia' => 'Inadimplência',
+    'cancelamento'  => 'Cancelamento pelo cliente',
+    'troca_licenca' => 'Substituída por outra licença',
+    'uso_indevido'  => 'Uso indevido',
+    'erro_emissao'  => 'Erro na emissão',
+    'outro'         => 'Outro',
+];
 
 $clientes = db()->query('SELECT id,razao_social FROM clientes ORDER BY razao_social')->fetchAll();
 $preselect = (int)($_GET['cliente'] ?? 0);
@@ -100,13 +147,24 @@ $tiers    = db()->query(
   'SELECT id,produto_id,codigo,nome,nivel FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
 
+// LEFT JOIN em clientes: licenca em estoque do revendedor ainda nao tem
+// cliente. Com JOIN simples, essas licencas sumiriam da lista.
 $licencas = db()->query(
-  'SELECT l.*, c.razao_social, p.codigo AS produto_codigo, t.codigo AS tier_codigo, t.nome AS tier_nome
+  'SELECT l.*, c.razao_social, u.nome AS revendedor_nome,
+          ur.nome AS revogada_por_nome,
+          p.codigo AS produto_codigo, t.codigo AS tier_codigo, t.nome AS tier_nome
      FROM licencas l
-     JOIN clientes c   ON c.id=l.cliente_id
+     LEFT JOIN clientes c ON c.id=l.cliente_id
+     LEFT JOIN usuarios u ON u.id=l.revendedor_id
+     LEFT JOIN usuarios ur ON ur.id=l.revogada_por
      LEFT JOIN produtos p ON p.id=l.produto_id
      LEFT JOIN tiers t    ON t.id=l.tier_id
     ORDER BY l.id DESC LIMIT 200')->fetchAll();
+
+// revendedores para o select de atribuicao
+$revendedores = db()->query(
+  "SELECT id,nome FROM usuarios WHERE papel='revendedor' AND ativo=1
+    ORDER BY nome")->fetchAll();
 
 abre_pagina('Licenças', 'licencas');
 ?>
@@ -133,9 +191,9 @@ abre_pagina('Licenças', 'licencas');
 
     <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
       <div>
-        <label>Cliente *</label>
-        <select name="cliente_id" required>
-          <option value="">— selecione —</option>
+        <label>Cliente (deixe vazio para estoque do revendedor)</label>
+        <select name="cliente_id">
+          <option value="">— sem cliente (estoque) —</option>
           <?php foreach ($clientes as $c): ?>
             <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
               <?= e($c['razao_social']) ?>
@@ -183,6 +241,29 @@ abre_pagina('Licenças', 'licencas');
       </div>
     </div>
 
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:14px">
+      <div>
+        <label>Atribuir a revendedor</label>
+        <select name="revendedor_id">
+          <option value="">— venda direta (minha) —</option>
+          <?php foreach ($revendedores as $r): ?>
+            <option value="<?= $r['id'] ?>"><?= e($r['nome']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Tipo</label>
+        <select name="tipo_licenca">
+          <option value="venda" selected>Venda</option>
+          <option value="demo">Demonstração</option>
+        </select>
+      </div>
+      <div>
+        <label>Quantidade (lote)</label>
+        <input type="number" name="quantidade" value="1" min="1" max="50">
+      </div>
+    </div>
+
     <label style="margin-top:14px">Módulos (opcional — compatibilidade)</label>
     <div style="display:flex;gap:20px;margin-top:6px">
       <label style="text-transform:none;margin:0"><input type="checkbox" name="modulos[]" value="TBE" style="width:auto"> TBE (pesagem)</label>
@@ -210,19 +291,37 @@ abre_pagina('Licenças', 'licencas');
     ?>
       <tr>
         <td class="mono"><?= e($l['chave']) ?></td>
-        <td><?= e($l['razao_social']) ?></td>
+        <td><?= e($l['razao_social'] ?? '— estoque —') ?>
+          <?php if (!empty($l['revendedor_nome'])): ?>
+            <br><span style="font-size:10px;color:var(--texto-2)">
+              rev: <?= e($l['revendedor_nome']) ?></span>
+          <?php endif; ?>
+          <?php if (($l['tipo_licenca'] ?? '') === 'demo'): ?>
+            <br><span class="badge nova" style="font-size:10px">demonstração</span>
+          <?php endif; ?>
+        </td>
         <td class="mono" style="font-size:11px"><?= e($prodTier) ?></td>
         <td class="mono" style="<?= $venceu?'color:var(--vermelho)':'' ?>"><?= date('d/m/Y',$exp) ?></td>
         <td class="mono" style="font-size:11px"><?= e($l['fingerprint'] ? substr($l['fingerprint'],0,14).'…' : '—') ?></td>
-        <td><span class="badge <?= e($l['status']) ?>"><?= e($l['status']) ?></span></td>
+        <td>
+          <span class="badge <?= e($l['status']) ?>"><?= e($l['status']) ?></span>
+          <?php if ($l['status']==='revogada'): ?>
+            <br><span style="font-size:10px;color:var(--texto-2)"
+                  title="<?= e($l['obs_revogacao'] ?? '') ?>">
+              <?= e($ROTULO_MOTIVO[$l['motivo_revogacao']] ?? 'motivo não informado') ?>
+              <?php if ($l['revogada_em']): ?>
+                <br><?= date('d/m/Y', strtotime($l['revogada_em'])) ?>
+                <?= $l['revogada_por_nome'] ? '· '.e($l['revogada_por_nome']) : '' ?>
+              <?php endif; ?>
+            </span>
+          <?php endif; ?>
+        </td>
         <td>
           <?php if ($l['status']!=='revogada'): ?>
-          <form method="post" onsubmit="return confirm('Revogar esta licença? O software do cliente deixará de funcionar.')" style="display:inline">
-            <input type="hidden" name="acao" value="revogar">
-            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-            <input type="hidden" name="id" value="<?= $l['id'] ?>">
-            <button class="btn perigo pequeno">Revogar</button>
-          </form>
+          <button class="btn perigo pequeno"
+                  onclick="abrirRevogar(<?= $l['id'] ?>, '<?= e($l['chave']) ?>')">
+            Revogar
+          </button>
           <?php endif; ?>
         </td>
       </tr>
@@ -253,6 +352,65 @@ selProd.addEventListener('change', function(){
   selTier.disabled = false;
   selTier.innerHTML = '<option value="">— selecione —</option>' +
     lista.map(t=>`<option value="${t.id}">${t.nome} (nível ${t.nivel})</option>`).join('');
+});
+</script>
+
+<!-- modal de revogacao: exige motivo antes de confirmar -->
+<div id="modalRevogar" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.6);z-index:50;align-items:center;justify-content:center">
+  <div class="card" style="max-width:520px;width:92%;margin:0">
+    <h3 style="margin-top:0">Revogar licença</h3>
+    <p class="subtitulo" style="margin-top:-6px">
+      O software do cliente deixará de funcionar na próxima revalidação.
+      Chave: <span class="mono" id="mrChave"></span>
+    </p>
+    <form method="post">
+      <input type="hidden" name="acao" value="revogar">
+      <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+      <input type="hidden" name="id" id="mrId">
+
+      <label>Motivo *</label>
+      <select name="motivo_revogacao" id="mrMotivo" required>
+        <option value="">— selecione —</option>
+        <?php foreach ($ROTULO_MOTIVO as $k => $rot): ?>
+          <option value="<?= e($k) ?>"><?= e($rot) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <label style="margin-top:12px">
+        Observação <span id="mrObrig" style="display:none">*</span>
+      </label>
+      <textarea name="obs_revogacao" id="mrObs" style="min-height:70px"
+                placeholder="Detalhe o que aconteceu (fica no histórico da licença)"></textarea>
+
+      <div style="margin-top:14px">
+        <button class="btn perigo">Confirmar revogação</button>
+        <button type="button" class="btn sec" style="margin-left:8px"
+                onclick="document.getElementById('modalRevogar').style.display='none'">
+          Cancelar
+        </button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function abrirRevogar(id, chave) {
+  document.getElementById('mrId').value = id;
+  document.getElementById('mrChave').textContent = chave;
+  document.getElementById('mrMotivo').value = '';
+  document.getElementById('mrObs').value = '';
+  document.getElementById('modalRevogar').style.display = 'flex';
+}
+// "Outro" sem explicacao nao serve de nada: exige a observacao
+document.addEventListener('DOMContentLoaded', function () {
+  var sel = document.getElementById('mrMotivo');
+  if (!sel) return;
+  sel.addEventListener('change', function () {
+    var outro = this.value === 'outro';
+    document.getElementById('mrObs').required = outro;
+    document.getElementById('mrObrig').style.display = outro ? '' : 'none';
+  });
 });
 </script>
 <?php fecha_pagina();
