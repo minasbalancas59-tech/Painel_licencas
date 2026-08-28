@@ -1,9 +1,7 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
-exige_admin_escopo();
 
 // ---- filtros (via GET) ---------------------------------------------
 $fAcao      = trim($_GET['acao'] ?? '');

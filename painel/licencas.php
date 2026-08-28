@@ -1,9 +1,7 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
-exige_admin_escopo();
 
 $msg=''; $tipo=''; $chaveGerada='';
 
@@ -16,64 +14,52 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         $meses    = (int)($_POST['meses'] ?? 12);
         $carencia = (int)($_POST['carencia'] ?? 15);
         $mods     = $_POST['modulos'] ?? [];
-        $revId    = (int)($_POST['revendedor_id'] ?? 0) ?: null;
-        $tipoLic  = ($_POST['tipo_licenca'] ?? 'venda') === 'demo' ? 'demo' : 'venda';
-        $qtd      = max(1, min(50, (int)($_POST['quantidade'] ?? 1)));
         $modsCsv  = implode(',', array_map(fn($m)=>preg_replace('/[^A-Z]/','',$m), $mods));
 
-        if ($tierId<=0)        { $msg='Selecione o software e o tipo de licença.'; $tipo='erro'; }
+        if ($cliId<=0)         { $msg='Selecione um cliente.'; $tipo='erro'; }
+        elseif ($tierId<=0)    { $msg='Selecione o software e o tipo de licença.'; $tipo='erro'; }
         elseif ($meses<=0)     { $msg='Validade inválida.'; $tipo='erro'; }
         else {
             try {
                 // resolve produto/tier/nivel a partir do tier escolhido
                 $t = resolver_tier($tierId);   // produto_codigo, tier_codigo, nivel...
 
-                // busca dados do cliente para o payload assinado.
-                // Licenca de estoque nasce sem cliente: quem preenche e o
-                // revendedor, ao vincular. So valida se um cliente foi escolhido.
-                $cliRow = null;
-                if ($cliId > 0) {
-                    $cli = db()->prepare('SELECT razao_social,cnpj FROM clientes WHERE id=?');
-                    $cli->execute([$cliId]);
-                    $cliRow = $cli->fetch();
-                    if (!$cliRow) throw new RuntimeException('Cliente não encontrado.');
-                }
+                // busca dados do cliente para o payload assinado
+                $cli = db()->prepare('SELECT razao_social,cnpj FROM clientes WHERE id=?');
+                $cli->execute([$cliId]);
+                $cliRow = $cli->fetch();
+                if (!$cliRow) throw new RuntimeException('Cliente não encontrado.');
 
+                $chave = gerar_chave_licenca();
                 $emit  = date('Y-m-d');
                 $exp   = date('Y-m-d', strtotime("+$meses months"));
                 $u     = usuario_logado();
-                $geradas = [];
 
-                // grava a(s) licenca(s) - fingerprint fica NULL ate a ativacao
+                // grava a licenca (fingerprint fica NULL ate a ativacao)
                 $st = db()->prepare(
                   'INSERT INTO licencas
-                     (cliente_id,revendedor_id,produto_id,tier_id,chave,modulos,
-                      emitido_em,expira_em,carencia_dias,status,tipo_licenca,criado_por)
-                   VALUES (?,?,?,?,?,?,?,?,?,"nova",?,?)');
+                     (cliente_id,produto_id,tier_id,chave,modulos,
+                      emitido_em,expira_em,carencia_dias,status,criado_por)
+                   VALUES (?,?,?,?,?,?,?,?,"nova",?)');
+                $st->execute([
+                    $cliId,
+                    $t['produto_id'],   // vem do JOIN em resolver_tier()
+                    $tierId, $chave, ($modsCsv ?: ''),
+                    $emit, $exp, $carencia, $u['id']
+                ]);
+                $licId = (int)db()->lastInsertId();
 
-                for ($i = 0; $i < $qtd; $i++) {
-                    $chave = gerar_chave_licenca();
-                    $st->execute([
-                        ($cliId ?: null), $revId,
-                        $t['produto_id'],   // vem do JOIN em resolver_tier()
-                        $tierId, $chave, ($modsCsv ?: ''),
-                        $emit, $exp, $carencia, $tipoLic, $u['id']
-                    ]);
-                    $licId = (int)db()->lastInsertId();
-                    $geradas[] = $chave;
+                // registra na auditoria (quem emitiu, produto/tier)
+                log_acao_painel(
+                    $licId, $chave, null, 'emitir', 'ok',
+                    $u['id'], $u['nome'] ?? null,
+                    $t['produto_codigo'], $t['tier_codigo'],
+                    "validade {$meses}m, carencia {$carencia}d"
+                );
 
-                    log_acao_painel(
-                        $licId, $chave, null, 'emitir', 'ok',
-                        $u['id'], $u['nome'] ?? null,
-                        $t['produto_codigo'], $t['tier_codigo'],
-                        "validade {$meses}m, carencia {$carencia}d, {$tipoLic}"
-                        . ($revId ? ", revendedor {$revId}" : ''));
-                }
-
-                $chaveGerada = implode("\n", $geradas);
-                $msg = count($geradas) . " licença(s) emitida(s) "
-                     . "({$t['produto_codigo']} · {$t['tier_codigo']}"
-                     . ($tipoLic === 'demo' ? ' · demonstração' : '') . ").";
+                $chaveGerada = $chave;
+                $msg = "Licença emitida ({$t['produto_codigo']} · {$t['tier_codigo']}). ".
+                       "Entregue a chave abaixo ao cliente para ativação.";
                 $tipo='ok';
             } catch (Throwable $ex) {
                 $msg='Erro ao emitir: '.$ex->getMessage(); $tipo='erro';
@@ -114,22 +100,13 @@ $tiers    = db()->query(
   'SELECT id,produto_id,codigo,nome,nivel FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
 
-// LEFT JOIN em clientes: licenca em estoque do revendedor ainda nao tem
-// cliente. Com JOIN simples, essas licencas sumiriam da lista.
 $licencas = db()->query(
-  'SELECT l.*, c.razao_social, u.nome AS revendedor_nome,
-          p.codigo AS produto_codigo, t.codigo AS tier_codigo, t.nome AS tier_nome
+  'SELECT l.*, c.razao_social, p.codigo AS produto_codigo, t.codigo AS tier_codigo, t.nome AS tier_nome
      FROM licencas l
-     LEFT JOIN clientes c ON c.id=l.cliente_id
-     LEFT JOIN usuarios u ON u.id=l.revendedor_id
+     JOIN clientes c   ON c.id=l.cliente_id
      LEFT JOIN produtos p ON p.id=l.produto_id
      LEFT JOIN tiers t    ON t.id=l.tier_id
     ORDER BY l.id DESC LIMIT 200')->fetchAll();
-
-// revendedores para o select de atribuicao
-$revendedores = db()->query(
-  "SELECT id,nome FROM usuarios WHERE papel='revendedor' AND ativo=1
-    ORDER BY nome")->fetchAll();
 
 abre_pagina('Licenças', 'licencas');
 ?>
@@ -156,9 +133,9 @@ abre_pagina('Licenças', 'licencas');
 
     <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
       <div>
-        <label>Cliente (deixe vazio para estoque do revendedor)</label>
-        <select name="cliente_id">
-          <option value="">— sem cliente (estoque) —</option>
+        <label>Cliente *</label>
+        <select name="cliente_id" required>
+          <option value="">— selecione —</option>
           <?php foreach ($clientes as $c): ?>
             <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
               <?= e($c['razao_social']) ?>
@@ -206,29 +183,6 @@ abre_pagina('Licenças', 'licencas');
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:14px">
-      <div>
-        <label>Atribuir a revendedor</label>
-        <select name="revendedor_id">
-          <option value="">— venda direta (minha) —</option>
-          <?php foreach ($revendedores as $r): ?>
-            <option value="<?= $r['id'] ?>"><?= e($r['nome']) ?></option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div>
-        <label>Tipo</label>
-        <select name="tipo_licenca">
-          <option value="venda" selected>Venda</option>
-          <option value="demo">Demonstração</option>
-        </select>
-      </div>
-      <div>
-        <label>Quantidade (lote)</label>
-        <input type="number" name="quantidade" value="1" min="1" max="50">
-      </div>
-    </div>
-
     <label style="margin-top:14px">Módulos (opcional — compatibilidade)</label>
     <div style="display:flex;gap:20px;margin-top:6px">
       <label style="text-transform:none;margin:0"><input type="checkbox" name="modulos[]" value="TBE" style="width:auto"> TBE (pesagem)</label>
@@ -256,15 +210,7 @@ abre_pagina('Licenças', 'licencas');
     ?>
       <tr>
         <td class="mono"><?= e($l['chave']) ?></td>
-        <td><?= e($l['razao_social'] ?? '— estoque —') ?>
-          <?php if (!empty($l['revendedor_nome'])): ?>
-            <br><span style="font-size:10px;color:var(--texto-2)">
-              rev: <?= e($l['revendedor_nome']) ?></span>
-          <?php endif; ?>
-          <?php if (($l['tipo_licenca'] ?? '') === 'demo'): ?>
-            <br><span class="badge nova" style="font-size:10px">demonstração</span>
-          <?php endif; ?>
-        </td>
+        <td><?= e($l['razao_social']) ?></td>
         <td class="mono" style="font-size:11px"><?= e($prodTier) ?></td>
         <td class="mono" style="<?= $venceu?'color:var(--vermelho)':'' ?>"><?= date('d/m/Y',$exp) ?></td>
         <td class="mono" style="font-size:11px"><?= e($l['fingerprint'] ? substr($l['fingerprint'],0,14).'…' : '—') ?></td>

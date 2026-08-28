@@ -1,7 +1,6 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
 
 /* =====================================================================
@@ -46,10 +45,6 @@ if ($fBusca !== '') {
              . 'OR c.razao_social LIKE ? OR m.fingerprint LIKE ?)';
     for ($i = 0; $i < 4; $i++) { $args[] = '%'.$fBusca.'%'; }
 }
-// revendedor ve somente as maquinas das licencas dele
-[$wEsc, $aEsc] = escopo_where('l');
-if ($wEsc) { $where[] = $wEsc; $args = array_merge($args, $aEsc); }
-
 $whereSql = $where ? ('WHERE ' . implode(' AND ', $where)) : '';
 
 $juncoes =
@@ -87,30 +82,14 @@ $stRes->execute($args);
 $resumo = $stRes->fetchAll();
 
 // contadores gerais (sempre do total, nao do filtro - servem de bussola)
-$rev = revendedor_atual();
-if ($rev === null) {
-    $gerais = db()->query(
-      "SELECT
-         COUNT(*) AS total,
-         SUM(CASE WHEN origem='dongle' THEN 1 ELSE 0 END) AS dongle,
-         SUM(CASE WHEN ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-                  THEN 1 ELSE 0 END) AS ativas7,
-         SUM(CASE WHEN licenca_id IS NULL THEN 1 ELSE 0 END) AS sem_licenca
-       FROM maquinas")->fetch();
-} else {
-    $stG = db()->prepare(
-      "SELECT
-         COUNT(*) AS total,
-         SUM(CASE WHEN m.origem='dongle' THEN 1 ELSE 0 END) AS dongle,
-         SUM(CASE WHEN m.ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 7 DAY)
-                  THEN 1 ELSE 0 END) AS ativas7,
-         SUM(CASE WHEN m.licenca_id IS NULL THEN 1 ELSE 0 END) AS sem_licenca
-       FROM maquinas m
-       JOIN licencas l ON l.id = m.licenca_id
-      WHERE l.revendedor_id = ?");
-    $stG->execute([$rev]);
-    $gerais = $stG->fetch();
-}
+$gerais = db()->query(
+  "SELECT
+     COUNT(*) AS total,
+     SUM(CASE WHEN origem='dongle' THEN 1 ELSE 0 END) AS dongle,
+     SUM(CASE WHEN ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+              THEN 1 ELSE 0 END) AS ativas7,
+     SUM(CASE WHEN licenca_id IS NULL THEN 1 ELSE 0 END) AS sem_licenca
+   FROM maquinas")->fetch();
 
 $produtosLista = db()->query(
   'SELECT codigo FROM produtos ORDER BY codigo')->fetchAll(PDO::FETCH_COLUMN);

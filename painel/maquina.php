@@ -1,7 +1,6 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
 
 /* =====================================================================
@@ -41,22 +40,6 @@ $st = db()->prepare(
 $st->execute([$fp]);
 $maq = $st->fetch();
 if (!$maq) { header('Location: maquinas.php'); exit; }
-
-// revendedor so ve maquinas das licencas dele (sem isto, bastava trocar
-// o fp na URL para ver o uso de qualquer cliente de qualquer revendedor)
-$rev = revendedor_atual();
-if ($rev !== null) {
-    if (empty($maq['licenca_id'])) {
-        http_response_code(403);
-        exit('Esta máquina não está vinculada a uma licença sua.');
-    }
-    $stChk = db()->prepare('SELECT revendedor_id FROM licencas WHERE id = ?');
-    $stChk->execute([$maq['licenca_id']]);
-    if ((int)$stChk->fetchColumn() !== $rev) {
-        http_response_code(403);
-        exit('Esta máquina não pertence a você.');
-    }
-}
 
 $desde = date('Y-m-d 00:00:00', strtotime("-$fPeriodo days"));
 
