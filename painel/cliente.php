@@ -60,6 +60,46 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             ->execute([(int)$_POST['c_id'], $id]);
         $msgC='Contato removido.'; $tipoC='ok';
     }
+    elseif ($ac === 'cliente_editar') {
+        $razao = trim($_POST['razao_social'] ?? '');
+        if ($razao === '') { $msgC='A razao social nao pode ficar vazia.'; $tipoC='erro'; }
+        else {
+            db()->prepare(
+              'UPDATE clientes
+                  SET razao_social=?, nome_fantasia=?, cnpj=?,
+                      municipio=?, uf=?, observacao=?
+                WHERE id=?')
+              ->execute([$razao,
+                         (trim($_POST['nome_fantasia'] ?? '') ?: null),
+                         trim($_POST['cnpj'] ?? ''),
+                         (trim($_POST['municipio'] ?? '') ?: null),
+                         (strtoupper(substr(trim($_POST['uf'] ?? ''),0,2)) ?: null),
+                         trim($_POST['observacao'] ?? ''),
+                         $id]);
+            // recarrega para o cabecalho refletir a mudanca na hora
+            $stc->execute([$id]);
+            $cli = $stc->fetch();
+            $msgC='Cadastro atualizado.'; $tipoC='ok';
+        }
+    }
+    elseif ($ac === 'contato_editar') {
+        $nome = trim($_POST['c_nome'] ?? '');
+        if ($nome === '') { $msgC='Informe o nome do contato.'; $tipoC='erro'; }
+        else {
+            // cliente_id no WHERE impede editar contato de outro cliente
+            db()->prepare(
+              'UPDATE cliente_contatos
+                  SET nome=?, cargo=?, telefone=?, email=?, observacao=?
+                WHERE id=? AND cliente_id=?')
+              ->execute([$nome,
+                         (trim($_POST['c_cargo'] ?? '') ?: null),
+                         (trim($_POST['c_telefone'] ?? '') ?: null),
+                         (trim($_POST['c_email'] ?? '') ?: null),
+                         (trim($_POST['c_obs'] ?? '') ?: null),
+                         (int)$_POST['c_id'], $id]);
+            $msgC='Contato atualizado.'; $tipoC='ok';
+        }
+    }
     elseif ($ac === 'contato_principal') {
         db()->prepare('UPDATE cliente_contatos SET principal=0 WHERE cliente_id=?')
             ->execute([$id]);
@@ -241,6 +281,61 @@ abre_pagina('Cliente', 'clientes');
 <?php if ($msgC): ?><div class="aviso <?= $tipoC ?>"><?= e($msgC) ?></div><?php endif; ?>
 
 <div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Cadastro</h3>
+    <button type="button" class="btn sec pequeno"
+            onclick="alternar('boxEditar')">Editar cadastro</button>
+  </div>
+
+  <div id="boxEditar" style="display:none;margin-top:16px">
+    <form method="post" action="<?= e(urlAtual()) ?>">
+      <input type="hidden" name="acao" value="cliente_editar">
+      <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+
+      <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+        <div style="flex:0 0 220px">
+          <label>CNPJ</label>
+          <input name="cnpj" id="fCnpj" value="<?= e($cli['cnpj']) ?>">
+        </div>
+        <button type="button" class="btn sec" onclick="buscarCnpj()">
+          Atualizar pela Receita
+        </button>
+        <span id="cnpjStatus" class="subtitulo" style="margin:0 0 8px"></span>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px">
+        <div>
+          <label>Razão social *</label>
+          <input name="razao_social" id="fRazao" required
+                 value="<?= e($cli['razao_social']) ?>">
+        </div>
+        <div>
+          <label>Nome fantasia</label>
+          <input name="nome_fantasia" id="fFantasia"
+                 value="<?= e($cli['nome_fantasia'] ?? '') ?>">
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px;margin-top:12px">
+        <div><label>Município</label>
+          <input name="municipio" id="fMunicipio" value="<?= e($cli['municipio'] ?? '') ?>"></div>
+        <div><label>UF</label>
+          <input name="uf" id="fUf" maxlength="2" value="<?= e($cli['uf'] ?? '') ?>"></div>
+      </div>
+
+      <label style="margin-top:12px">Observação</label>
+      <textarea name="observacao" style="min-height:60px"><?= e($cli['observacao'] ?? '') ?></textarea>
+
+      <div style="margin-top:12px">
+        <button class="btn">Salvar alterações</button>
+        <button type="button" class="btn sec" style="margin-left:8px"
+                onclick="alternar('boxEditar')">Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card">
   <h3>Contatos (<?= count($contatos) ?>)</h3>
   <table>
     <thead><tr>
@@ -251,7 +346,7 @@ abre_pagina('Cliente', 'clientes');
     <?php if (!$contatos): ?>
       <tr><td colspan="6" style="color:var(--texto-2)">Nenhum contato cadastrado.</td></tr>
     <?php else: foreach ($contatos as $ct): ?>
-      <tr>
+      <tr id="ver<?= $ct['id'] ?>">
         <td>
           <b><?= e($ct['nome']) ?></b>
           <?php if ($ct['principal']): ?>
@@ -267,12 +362,13 @@ abre_pagina('Cliente', 'clientes');
         </td>
         <td style="font-size:11px;color:var(--texto-2)"><?= e($ct['observacao'] ?: '') ?></td>
         <td style="white-space:nowrap">
+          <button type="button" class="btn sec pequeno"
+                  onclick="editarContato(<?= $ct['id'] ?>)">Editar</button>
           <?php if (!$ct['principal']): ?>
             <form method="post" action="<?= e(urlAtual()) ?>" style="display:inline">
               <input type="hidden" name="acao" value="contato_principal">
               <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
               <input type="hidden" name="c_id" value="<?= $ct['id'] ?>">
-              <input type="hidden" name="id" value="<?= $id ?>">
               <button class="btn sec pequeno">Tornar principal</button>
             </form>
           <?php endif; ?>
@@ -281,8 +377,35 @@ abre_pagina('Cliente', 'clientes');
             <input type="hidden" name="acao" value="contato_remove">
             <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
             <input type="hidden" name="c_id" value="<?= $ct['id'] ?>">
-            <input type="hidden" name="id" value="<?= $id ?>">
             <button class="btn perigo pequeno">Remover</button>
+          </form>
+        </td>
+      </tr>
+      <tr id="edt<?= $ct['id'] ?>" style="display:none">
+        <td colspan="6" style="background:var(--bg-3)">
+          <form method="post" action="<?= e(urlAtual()) ?>">
+            <input type="hidden" name="acao" value="contato_editar">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <input type="hidden" name="c_id" value="<?= $ct['id'] ?>">
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:12px">
+              <div><label>Nome *</label>
+                <input name="c_nome" required value="<?= e($ct['nome']) ?>"></div>
+              <div><label>Cargo / setor</label>
+                <input name="c_cargo" value="<?= e($ct['cargo'] ?? '') ?>"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-top:10px">
+              <div><label>Telefone</label>
+                <input name="c_telefone" value="<?= e($ct['telefone'] ?? '') ?>"></div>
+              <div><label>E-mail</label>
+                <input name="c_email" type="email" value="<?= e($ct['email'] ?? '') ?>"></div>
+              <div><label>Observação</label>
+                <input name="c_obs" value="<?= e($ct['observacao'] ?? '') ?>"></div>
+            </div>
+            <div style="margin-top:10px">
+              <button class="btn pequeno">Salvar</button>
+              <button type="button" class="btn sec pequeno" style="margin-left:6px"
+                      onclick="editarContato(<?= $ct['id'] ?>)">Cancelar</button>
+            </div>
           </form>
         </td>
       </tr>
@@ -291,8 +414,7 @@ abre_pagina('Cliente', 'clientes');
   </table>
 
   <button type="button" class="btn sec" style="margin-top:14px"
-          onclick="var b=document.getElementById('boxContato');
-                   b.style.display = b.style.display==='none' ? '' : 'none';">
+          onclick="alternar('boxContato')">
     + Adicionar contato
   </button>
 
@@ -519,4 +641,61 @@ new Chart(document.getElementById('gHora'), {
 });
 </script>
 <?php endif; ?>
+
+<script>
+function alternar(id) {
+  const el = document.getElementById(id);
+  el.style.display = (el.style.display === 'none') ? '' : 'none';
+  if (el.style.display === '') el.scrollIntoView({behavior:'smooth', block:'center'});
+}
+
+function editarContato(id) {
+  const ver = document.getElementById('ver' + id);
+  const edt = document.getElementById('edt' + id);
+  const abrindo = edt.style.display === 'none';
+  edt.style.display = abrindo ? '' : 'none';
+  ver.style.display = abrindo ? 'none' : '';
+}
+
+// Aqui a consulta SOBRESCREVE os campos, ao contrario do cadastro novo:
+// na edicao o usuario clicou de proposito para atualizar os dados.
+function buscarCnpj() {
+  const status = document.getElementById('cnpjStatus');
+  const cnpj = document.getElementById('fCnpj').value.replace(/\D/g, '');
+
+  if (cnpj.length !== 14) {
+    status.textContent = 'Digite os 14 dígitos do CNPJ.';
+    status.style.color = 'var(--vermelho)';
+    return;
+  }
+  status.textContent = 'Consultando...';
+  status.style.color = 'var(--texto-2)';
+
+  fetch('cnpj.php?cnpj=' + cnpj)
+    .then(r => r.json())
+    .then(j => {
+      if (!j.ok) {
+        status.textContent = j.erro || 'Não encontrado.';
+        status.style.color = 'var(--vermelho)';
+        return;
+      }
+      const d = j.dados;
+      const por = (id, val) => {
+        const el = document.getElementById(id);
+        if (el && val) el.value = val;
+      };
+      por('fRazao', d.razao_social);
+      por('fFantasia', d.nome_fantasia);
+      por('fMunicipio', d.municipio);
+      por('fUf', d.uf);
+      status.textContent = d.situacao ? ('Receita: ' + d.situacao) : 'Dados atualizados.';
+      status.style.color = (d.situacao && d.situacao.toUpperCase() !== 'ATIVA')
+                           ? 'var(--ambar)' : 'var(--verde)';
+    })
+    .catch(() => {
+      status.textContent = 'Falha na consulta.';
+      status.style.color = 'var(--vermelho)';
+    });
+}
+</script>
 <?php fecha_pagina();
