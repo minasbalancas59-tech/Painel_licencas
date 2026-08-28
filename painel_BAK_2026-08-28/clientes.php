@@ -1,7 +1,6 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
 
 $msg = ''; $tipo = '';
@@ -14,9 +13,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
         if ($razao === '') { $msg='Informe a razão social.'; $tipo='erro'; }
         else {
             $st = db()->prepare(
-              'INSERT INTO clientes (razao_social,cnpj,contato,telefone,email,
-                                     observacao,criado_por,revendedor_id)
-               VALUES (?,?,?,?,?,?,?,?)');
+              'INSERT INTO clientes (razao_social,cnpj,contato,telefone,email,observacao,criado_por)
+               VALUES (?,?,?,?,?,?,?)');
             $st->execute([
                 $razao,
                 trim($_POST['cnpj']??''),
@@ -25,24 +23,20 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
                 trim($_POST['email']??''),
                 trim($_POST['observacao']??''),
                 usuario_logado()['id'],
-                revendedor_atual(),
             ]);
             $msg='Cliente cadastrado.'; $tipo='ok';
         }
     }
 }
 
-[$wEsc, $aEsc] = escopo_where('c');
-$stCli = db()->prepare(
+$clientes = db()->query(
   'SELECT c.*, (SELECT COUNT(*) FROM licencas l WHERE l.cliente_id=c.id) AS n_lic
-     FROM clientes c ' . ($wEsc ? "WHERE $wEsc" : '') . ' ORDER BY c.razao_social');
-$stCli->execute($aEsc);
-$clientes = $stCli->fetchAll();
+     FROM clientes c ORDER BY c.razao_social')->fetchAll();
 
-abre_pagina(eh_admin() ? 'Clientes' : 'Meus clientes', 'clientes');
+abre_pagina('Clientes', 'clientes');
 ?>
-<h1 class="titulo"><?= eh_admin() ? 'Clientes' : 'Meus clientes' ?></h1>
-<p class="subtitulo">Cadastre as empresas que utilizam o sistema</p>
+<h1 class="titulo">Clientes</h1>
+<p class="subtitulo">Cadastre as empresas que utilizam o Total Scale</p>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
 

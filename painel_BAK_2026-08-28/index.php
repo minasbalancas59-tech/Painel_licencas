@@ -1,9 +1,7 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
-exige_admin_escopo();
 
 $total     = db()->query('SELECT COUNT(*) FROM licencas')->fetchColumn();
 $ativas    = db()->query("SELECT COUNT(*) FROM licencas WHERE status='ativa'")->fetchColumn();

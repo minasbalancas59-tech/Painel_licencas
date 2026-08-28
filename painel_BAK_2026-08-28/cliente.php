@@ -1,7 +1,6 @@
 <?php
 require 'inc/auth.php';
 require 'inc/layout.php';
-require 'inc/escopo.php';
 exige_login();
 
 $id = (int)($_GET['id'] ?? 0);
@@ -12,13 +11,6 @@ $stc = db()->prepare('SELECT * FROM clientes WHERE id=?');
 $stc->execute([$id]);
 $cli = $stc->fetch();
 if (!$cli) { header('Location: clientes.php'); exit; }
-
-// revendedor so ve os proprios clientes (sem isto, bastava trocar o id na URL)
-$rev = revendedor_atual();
-if ($rev !== null && (int)$cli['revendedor_id'] !== $rev) {
-    http_response_code(403);
-    exit('Este cliente não pertence a você.');
-}
 
 // maquinas do cliente (ultimo acesso + contador)
 $stm = db()->prepare(
