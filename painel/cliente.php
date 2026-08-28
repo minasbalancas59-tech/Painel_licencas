@@ -122,21 +122,56 @@ $fProduto = trim($_GET['produto'] ?? '');
 $fDias    = (int)($_GET['dias'] ?? 30);
 if (!in_array($fDias, [7,30,90,365], true)) $fDias = 30;
 
+// filtro vindo dos botoes de alerta (leva direto ao subconjunto que
+// motivou o aviso, em vez de obrigar a garimpar a tabela inteira)
+$fAlerta = trim($_GET['alerta'] ?? '');
+$ROTULO_ALERTA = [
+    'vencendo'     => 'vencendo nos próximos 30 dias',
+    'vencidas'     => 'já vencidas',
+    'nao_ativadas' => 'emitidas e nunca ativadas',
+    'revogadas'    => 'revogadas',
+];
+
 // ---- licencas (com filtro) ------------------------------------------
 $wLic = ['l.cliente_id = ?']; $aLic = [$id];
 if ($fStatus  !== '') { $wLic[] = 'l.status = ?';  $aLic[] = $fStatus; }
 if ($fProduto !== '') { $wLic[] = 'p.codigo = ?';  $aLic[] = $fProduto; }
 
+switch ($fAlerta) {
+    case 'vencendo':
+        $wLic[] = "l.status='ativa' AND l.expira_em BETWEEN CURDATE() "
+                . "AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)";
+        break;
+    case 'vencidas':
+        $wLic[] = "l.status='ativa' AND l.expira_em < CURDATE()";
+        break;
+    case 'nao_ativadas':
+        $wLic[] = "l.fingerprint IS NULL AND l.status <> 'revogada'";
+        break;
+    case 'revogadas':
+        $wLic[] = "l.status='revogada'";
+        break;
+}
+
+// LEFT JOIN em maquinas pelo fingerprint: traz onde a licenca esta
+// rodando de fato, sem precisar de uma segunda consulta por linha
 $stl = db()->prepare(
   'SELECT l.*, t.nome AS tier_nome, t.codigo AS tier_codigo,
           p.codigo AS produto_codigo, ur.nome AS revogada_por_nome,
-          DATEDIFF(l.expira_em, CURDATE()) AS dias_restantes
+          ue.nome AS emitida_por_nome, urv.nome AS revendedor_nome,
+          m.maq_nome, m.maq_usuario, m.maq_so, m.origem,
+          m.primeiro_acesso, m.ultimo_acesso, m.aberturas, m.ip_ultimo,
+          DATEDIFF(l.expira_em, CURDATE()) AS dias_restantes,
+          DATEDIFF(NOW(), m.ultimo_acesso) AS dias_sem_ver
      FROM licencas l
-     LEFT JOIN tiers t    ON t.id = l.tier_id
-     LEFT JOIN produtos p ON p.id = l.produto_id
+     LEFT JOIN tiers t     ON t.id = l.tier_id
+     LEFT JOIN produtos p  ON p.id = l.produto_id
      LEFT JOIN usuarios ur ON ur.id = l.revogada_por
+     LEFT JOIN usuarios ue ON ue.id = l.criado_por
+     LEFT JOIN usuarios urv ON urv.id = l.revendedor_id
+     LEFT JOIN maquinas m  ON m.fingerprint = l.fingerprint
     WHERE '.implode(' AND ', $wLic).'
-    ORDER BY l.id DESC');
+    ORDER BY l.expira_em');
 $stl->execute($aLic);
 $licencas = $stl->fetchAll();
 
@@ -282,7 +317,7 @@ $stAl = db()->prepare(
       AND expira_em BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)");
 $stAl->execute([$id]);
 if ($n = (int)$stAl->fetchColumn()) {
-    $alertas[] = ['ambar', "$n licença(s) vencem nos próximos 30 dias."];
+    $alertas[] = ['ambar', "$n licença(s) vencem nos próximos 30 dias.", 'vencendo'];
 }
 
 // 2) licenca vencida ainda sem renovacao
@@ -291,7 +326,7 @@ $stAl = db()->prepare(
     WHERE cliente_id=? AND status='ativa' AND expira_em < CURDATE()");
 $stAl->execute([$id]);
 if ($n = (int)$stAl->fetchColumn()) {
-    $alertas[] = ['vermelho', "$n licença(s) já venceram e não foram renovadas."];
+    $alertas[] = ['vermelho', "$n licença(s) já venceram e não foram renovadas.", 'vencidas'];
 }
 
 // 3) sumico: parou de abrir o sistema
@@ -302,7 +337,7 @@ $diasSumido = $stAl->fetchColumn();
 if ($diasSumido !== null && $diasSumido !== false && (int)$diasSumido > 30) {
     $alertas[] = ['vermelho',
         'Sem abrir o sistema há '.(int)$diasSumido.' dias. '
-       .'Pode ser desinstalação, troca de fornecedor ou máquina parada.'];
+       .'Pode ser desinstalação, troca de fornecedor ou máquina parada.', null];
 }
 
 // 4) licenca emitida que nunca foi ativada
@@ -311,7 +346,7 @@ $stAl = db()->prepare(
     WHERE cliente_id=? AND fingerprint IS NULL AND status <> 'revogada'");
 $stAl->execute([$id]);
 if ($n = (int)$stAl->fetchColumn()) {
-    $alertas[] = ['azul', "$n licença(s) emitidas mas nunca ativadas."];
+    $alertas[] = ['azul', "$n licença(s) emitidas mas nunca ativadas.", 'nao_ativadas'];
 }
 
 // 5) transferencias perto do limite
@@ -320,7 +355,7 @@ if ((int)$rel['transferencias'] > 0) {
     if ($restam <= 1) {
         $alertas[] = ['ambar',
             'Limite de transferências quase esgotado ('
-           .(int)$rel['transferencias'].' de '.(int)$rel['max_transf'].' usadas).'];
+           .(int)$rel['transferencias'].' de '.(int)$rel['max_transf'].' usadas).', null];
     }
 }
 
@@ -337,7 +372,7 @@ function tempoAtras($dt) {
 // URL atual (com filtros) para os forms de contato nao perderem o estado
 function urlAtual() {
     $base = [];
-    foreach (['id','status','produto','dias'] as $k) {
+    foreach (['id','status','produto','dias','alerta'] as $k) {
         if (isset($_GET[$k]) && $_GET[$k] !== '') $base[$k] = $_GET[$k];
     }
     return 'cliente.php?'.http_build_query($base);
@@ -347,7 +382,7 @@ function linkFiltro(array $novo) {
     // repassa apenas os filtros conhecidos - $_GET inteiro carregaria
     // qualquer parametro estranho colado na URL
     $base = [];
-    foreach (['id','status','produto','dias'] as $k) {
+    foreach (['id','status','produto','dias','alerta'] as $k) {
         if (isset($_GET[$k]) && $_GET[$k] !== '') $base[$k] = $_GET[$k];
     }
     return 'cliente.php?'.http_build_query(array_merge($base, $novo));
@@ -429,8 +464,15 @@ abre_pagina('Cliente', 'clientes');
 
 <?php foreach ($alertas as $al): ?>
   <div class="card" style="padding:10px 16px;margin-bottom:10px;
-       border-left:3px solid var(--<?= $al[0] ?>)">
+       border-left:3px solid var(--<?= $al[0] ?>);
+       display:flex;justify-content:space-between;align-items:center;gap:16px">
     <span style="font-size:13px"><?= e($al[1]) ?></span>
+    <?php if (!empty($al[2])): ?>
+      <a class="btn sec pequeno" style="white-space:nowrap"
+         href="<?= e(linkFiltro(['alerta'=>$al[2]])) ?>#licencas">
+        Ver licenças
+      </a>
+    <?php endif; ?>
   </div>
 <?php endforeach; ?>
 
@@ -602,11 +644,18 @@ abre_pagina('Cliente', 'clientes');
   <div class="stat"><div class="n"><?= $totalAberturas ?></div><div class="l">Aberturas (<?= $fDias ?>d)</div></div>
 </div>
 
-<div class="card">
+<div class="card" id="licencas">
   <h3>Licenças</h3>
+  <?php if ($fAlerta && isset($ROTULO_ALERTA[$fAlerta])): ?>
+    <p class="subtitulo" style="margin-top:-6px">
+      Mostrando apenas as licenças <b><?= e($ROTULO_ALERTA[$fAlerta]) ?></b> ·
+      <a href="<?= e(linkFiltro(['alerta'=>''])) ?>">ver todas</a>
+    </p>
+  <?php endif; ?>
   <form method="get" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="id" value="<?= $id ?>">
     <input type="hidden" name="dias" value="<?= $fDias ?>">
+    <input type="hidden" name="alerta" value="<?= e($fAlerta) ?>">
     <div>
       <label>Status</label>
       <select name="status">
@@ -632,11 +681,11 @@ abre_pagina('Cliente', 'clientes');
   <table style="margin-top:16px">
     <thead><tr>
       <th>Chave</th><th>Software/Tipo</th><th>Emitida</th>
-      <th>Expira</th><th>Situação</th><th>Máquina</th>
+      <th>Expira</th><th>Situação</th><th>Máquina</th><th></th>
     </tr></thead>
     <tbody>
     <?php if (!$licencas): ?>
-      <tr><td colspan="6" style="color:var(--texto-2)">
+      <tr><td colspan="7" style="color:var(--texto-2)">
         Nenhuma licença para os filtros escolhidos.
       </td></tr>
     <?php else: foreach ($licencas as $l):
@@ -646,7 +695,9 @@ abre_pagina('Cliente', 'clientes');
         $dias = (int)$l['dias_restantes'];
     ?>
       <tr>
-        <td class="mono" style="font-size:11px"><?= e($l['chave']) ?>
+        <td class="mono" style="font-size:11px">
+          <a href="#" onclick="detalhe(<?= $l['id'] ?>);return false;"
+             title="Ver todos os detalhes"><?= e($l['chave']) ?></a>
           <?php if (($l['tipo_licenca'] ?? '')==='demo'): ?>
             <br><span class="badge nova" style="font-size:10px">demonstração</span>
           <?php endif; ?>
@@ -676,7 +727,134 @@ abre_pagina('Cliente', 'clientes');
           <?php endif; ?>
         </td>
         <td class="mono" style="font-size:10px">
-          <?= $l['fingerprint'] ? e(substr($l['fingerprint'],0,14)).'…' : '— não ativada —' ?>
+          <?php if ($l['fingerprint']): ?>
+            <?= e($l['maq_nome'] ?: substr($l['fingerprint'],0,14).'…') ?>
+          <?php else: ?>
+            <span style="color:var(--azul)">não ativada</span>
+          <?php endif; ?>
+        </td>
+        <td>
+          <button type="button" class="btn sec pequeno"
+                  onclick="detalhe(<?= $l['id'] ?>)">Detalhes</button>
+        </td>
+      </tr>
+      <tr id="det<?= $l['id'] ?>" style="display:none">
+        <td colspan="7" style="background:var(--bg-3);padding:16px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+
+            <div>
+              <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">
+                LICENÇA</h4>
+              <table style="font-size:11px">
+                <tr><td style="color:var(--texto-2)">Chave</td>
+                    <td class="mono"><?= e($l['chave']) ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Software</td>
+                    <td><?= e(strtoupper($l['produto_codigo'] ?? '—')) ?>
+                        <?= $l['tier_nome'] ? '· '.e($l['tier_nome']) : '' ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Tipo</td>
+                    <td><?= ($l['tipo_licenca'] ?? '')==='demo'
+                            ? 'Demonstração' : 'Venda' ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Módulos</td>
+                    <td class="mono"><?= e($l['modulos'] ?: '—') ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Emitida em</td>
+                    <td><?= date('d/m/Y', strtotime($l['emitido_em'])) ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Emitida por</td>
+                    <td><?= e($l['emitida_por_nome'] ?: '—') ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Revendedor</td>
+                    <td><?= e($l['revendedor_nome'] ?: 'venda direta') ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Expira em</td>
+                    <td><?= date('d/m/Y', strtotime($l['expira_em'])) ?>
+                        <?php $dr=(int)$l['dias_restantes']; ?>
+                        <span style="color:<?= $dr<0?'var(--vermelho)':($dr<=30?'var(--ambar)':'var(--texto-2)') ?>">
+                          (<?= $dr < 0 ? abs($dr).' dias atrás' : $dr.' dias' ?>)
+                        </span></td></tr>
+                <tr><td style="color:var(--texto-2)">Carência</td>
+                    <td><?= (int)($l['carencia_dias'] ?? 0) ?> dias</td></tr>
+                <tr><td style="color:var(--texto-2)">Transferências</td>
+                    <td><?= (int)$l['transferencias'] ?> de
+                        <?= (int)($l['max_transferencias'] ?? 3) ?></td></tr>
+              </table>
+            </div>
+
+            <div>
+              <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">
+                MÁQUINA</h4>
+              <?php if (!$l['fingerprint']): ?>
+                <p style="font-size:11px;color:var(--texto-2)">
+                  Ainda não ativada. A chave foi entregue mas o software
+                  nunca foi aberto com ela.
+                </p>
+              <?php else: ?>
+                <table style="font-size:11px">
+                  <tr><td style="color:var(--texto-2)">Código</td>
+                      <td class="mono"><?= e($l['fingerprint']) ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Nome do PC</td>
+                      <td><?= e($l['maq_nome'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Usuário</td>
+                      <td><?= e($l['maq_usuario'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Sistema</td>
+                      <td><?= e($l['maq_so'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Origem</td>
+                      <td><?= e($l['origem'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">IP</td>
+                      <td class="mono"><?= e($l['ip_ultimo'] ?: '—') ?></td></tr>
+                </table>
+              <?php endif; ?>
+            </div>
+
+            <div>
+              <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">
+                USO</h4>
+              <?php if (!$l['fingerprint']): ?>
+                <p style="font-size:11px;color:var(--texto-2)">Sem uso registrado.</p>
+              <?php else: ?>
+                <table style="font-size:11px">
+                  <tr><td style="color:var(--texto-2)">Primeiro acesso</td>
+                      <td><?= $l['primeiro_acesso']
+                              ? date('d/m/Y H:i', strtotime($l['primeiro_acesso'])) : '—' ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Último acesso</td>
+                      <td><?= $l['ultimo_acesso']
+                              ? date('d/m/Y H:i', strtotime($l['ultimo_acesso'])) : '—' ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Há quanto tempo</td>
+                      <td><?php
+                          $ds = $l['dias_sem_ver'];
+                          if ($ds === null) {
+                              echo '—';
+                          } elseif ((int)$ds === 0) {
+                              echo 'hoje';
+                          } else {
+                              $cor = (int)$ds > 30 ? 'var(--vermelho)' : 'inherit';
+                              echo '<span style="color:'.$cor.'">'.(int)$ds.' dias</span>';
+                          }
+                      ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Aberturas</td>
+                      <td class="mono"><?= (int)$l['aberturas'] ?></td></tr>
+                </table>
+                <a class="btn sec pequeno" style="margin-top:10px"
+                   href="maquina.php?fp=<?= urlencode($l['fingerprint']) ?>">
+                  Ver uso detalhado
+                </a>
+              <?php endif; ?>
+
+              <?php if ($l['status']==='revogada'): ?>
+                <h4 style="margin:16px 0 8px;font-size:12px;color:var(--vermelho)">
+                  REVOGAÇÃO</h4>
+                <table style="font-size:11px">
+                  <tr><td style="color:var(--texto-2)">Motivo</td>
+                      <td><?= e($ROTULO_MOTIVO[$l['motivo_revogacao']] ?? 'não informado') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Quando</td>
+                      <td><?= $l['revogada_em']
+                              ? date('d/m/Y', strtotime($l['revogada_em'])) : '—' ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Por</td>
+                      <td><?= e($l['revogada_por_nome'] ?: '—') ?></td></tr>
+                </table>
+                <?php if (!empty($l['obs_revogacao'])): ?>
+                  <p style="font-size:11px;font-style:italic;margin-top:6px">
+                    "<?= e($l['obs_revogacao']) ?>"</p>
+                <?php endif; ?>
+              <?php endif; ?>
+            </div>
+          </div>
         </td>
       </tr>
     <?php endforeach; endif; ?>
@@ -831,6 +1009,11 @@ new Chart(document.getElementById('gHora'), {
 <?php endif; ?>
 
 <script>
+function detalhe(id) {
+  const el = document.getElementById('det' + id);
+  el.style.display = (el.style.display === 'none') ? '' : 'none';
+}
+
 function alternar(id) {
   const el = document.getElementById(id);
   el.style.display = (el.style.display === 'none') ? '' : 'none';
