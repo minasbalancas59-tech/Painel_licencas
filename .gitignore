@@ -3,3 +3,4 @@ api/lib/config.php
 *.log
 *.bak
 *.bak[0-9]
+painel_BAK_*/
