@@ -632,7 +632,11 @@ abre_pagina('Cliente', 'clientes');
         <div><label>E-mail</label><input name="c_email" type="email"></div>
         <div><label>Observação</label><input name="c_obs"></div>
       </div>
-      <button class="btn" style="margin-top:12px">Adicionar contato</button>
+      <div style="margin-top:12px">
+        <button class="btn">Adicionar contato</button>
+        <button type="button" class="btn sec" style="margin-left:8px"
+                onclick="alternar('boxContato')">Cancelar</button>
+      </div>
     </form>
   </div>
 </div>
