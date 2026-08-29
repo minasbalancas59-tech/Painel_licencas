@@ -16,12 +16,26 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         $meses    = (int)($_POST['meses'] ?? 12);
         $carencia = (int)($_POST['carencia'] ?? 15);
         $mods     = $_POST['modulos'] ?? [];
+        // destino explicito: evita o engano de deixar o cliente vazio
+        // sem querer e a licenca sumir para um estoque nao pretendido
+        $destino  = ($_POST['destino'] ?? 'cliente') === 'revenda'
+                    ? 'revenda' : 'cliente';
         $revId    = (int)($_POST['revendedor_id'] ?? 0) ?: null;
+
+        // cada destino zera o campo do outro
+        if ($destino === 'revenda') { $cliId = 0; }
+        else                        { $revId = null; }
         $tipoLic  = ($_POST['tipo_licenca'] ?? 'venda') === 'demo' ? 'demo' : 'venda';
         $qtd      = max(1, min(50, (int)($_POST['quantidade'] ?? 1)));
         $modsCsv  = implode(',', array_map(fn($m)=>preg_replace('/[^A-Z]/','',$m), $mods));
 
-        if ($tierId<=0)        { $msg='Selecione o software e o tipo de licença.'; $tipo='erro'; }
+        if ($tierId<=0) {
+            $msg='Selecione o software e o tipo de licença.'; $tipo='erro';
+        } elseif ($destino === 'cliente' && $cliId <= 0) {
+            $msg='Para cliente final, selecione o cliente.'; $tipo='erro';
+        } elseif ($destino === 'revenda' && !$revId) {
+            $msg='Para revenda, selecione o revendedor.'; $tipo='erro';
+        }
         elseif ($meses<=0)     { $msg='Validade inválida.'; $tipo='erro'; }
         else {
             try {
@@ -162,9 +176,11 @@ $licencas = db()->query(
     ORDER BY l.id DESC LIMIT 200')->fetchAll();
 
 // revendedores para o select de atribuicao
+// so revendedores ATIVOS podem receber licenca nova
 $revendedores = db()->query(
-  "SELECT id,nome FROM usuarios WHERE papel='revendedor' AND ativo=1
-    ORDER BY nome")->fetchAll();
+  "SELECT id, nome, empresa FROM usuarios
+    WHERE papel='revendedor' AND ativo=1
+    ORDER BY COALESCE(empresa,nome)")->fetchAll();
 
 abre_pagina('Licenças', 'licencas');
 ?>
@@ -189,11 +205,37 @@ abre_pagina('Licenças', 'licencas');
     <input type="hidden" name="acao" value="emitir">
     <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
 
-    <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+    <label>Destino da licença</label>
+    <div style="display:flex;gap:10px;margin-bottom:16px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
+             border:1px solid var(--borda);border-radius:var(--radius);
+             padding:10px 16px;flex:1" id="lblCliente">
+        <input type="radio" name="destino" value="cliente" checked
+               onchange="trocarDestino()" style="width:auto;margin:0">
+        <span>
+          <b>Cliente final</b><br>
+          <span class="subtitulo" style="margin:0;font-size:11px">
+            venda direta sua, já vinculada ao cliente</span>
+        </span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
+             border:1px solid var(--borda);border-radius:var(--radius);
+             padding:10px 16px;flex:1" id="lblRevenda">
+        <input type="radio" name="destino" value="revenda"
+               onchange="trocarDestino()" style="width:auto;margin:0">
+        <span>
+          <b>Revenda</b><br>
+          <span class="subtitulo" style="margin:0;font-size:11px">
+            vai para o estoque do revendedor</span>
+        </span>
+      </label>
+    </div>
+
+    <div id="boxCliente" style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
       <div>
-        <label>Cliente (deixe vazio para estoque do revendedor)</label>
-        <select name="cliente_id">
-          <option value="">— sem cliente (estoque) —</option>
+        <label>Cliente final *</label>
+        <select name="cliente_id" id="selCliente">
+          <option value="">— selecione o cliente —</option>
           <?php foreach ($clientes as $c): ?>
             <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
               <?= e($c['razao_social']) ?>
@@ -241,16 +283,23 @@ abre_pagina('Licenças', 'licencas');
       </div>
     </div>
 
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:14px">
-      <div>
-        <label>Atribuir a revendedor</label>
-        <select name="revendedor_id">
-          <option value="">— venda direta (minha) —</option>
-          <?php foreach ($revendedores as $r): ?>
-            <option value="<?= $r['id'] ?>"><?= e($r['nome']) ?></option>
-          <?php endforeach; ?>
-        </select>
-      </div>
+    <div id="boxRevenda" style="display:none;margin-top:14px">
+      <label>Revendedor *</label>
+      <select name="revendedor_id" id="selRevendedor">
+        <option value="">— selecione o revendedor —</option>
+        <?php foreach ($revendedores as $r): ?>
+          <option value="<?= $r['id'] ?>">
+            <?= e($r['empresa'] ?: $r['nome']) ?>
+          </option>
+        <?php endforeach; ?>
+      </select>
+      <p class="subtitulo" style="margin:6px 0 0">
+        A licença vai para o estoque dele. O cliente final é preenchido
+        pelo próprio revendedor, quando vender.
+      </p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px">
       <div>
         <label>Tipo</label>
         <select name="tipo_licenca">
@@ -260,7 +309,7 @@ abre_pagina('Licenças', 'licencas');
       </div>
       <div>
         <label>Quantidade (lote)</label>
-        <input type="number" name="quantidade" value="1" min="1" max="50">
+        <input type="number" name="quantidade" id="fQtd" value="1" min="1" max="50">
       </div>
     </div>
 
@@ -395,6 +444,24 @@ selProd.addEventListener('change', function(){
 </div>
 
 <script>
+function trocarDestino() {
+  const revenda = document.querySelector('input[name=destino]:checked').value === 'revenda';
+  document.getElementById('boxCliente').style.display  = revenda ? 'none' : 'grid';
+  document.getElementById('boxRevenda').style.display  = revenda ? '' : 'none';
+  document.getElementById('selCliente').required    = !revenda;
+  document.getElementById('selRevendedor').required = revenda;
+  // lote so faz sentido para estoque de revenda
+  const qtd = document.getElementById('fQtd');
+  if (!revenda) { qtd.value = 1; qtd.readOnly = true; } else { qtd.readOnly = false; }
+
+  // destaque visual do cartao escolhido
+  document.getElementById('lblCliente').style.borderColor =
+      revenda ? 'var(--borda)' : 'var(--ambar)';
+  document.getElementById('lblRevenda').style.borderColor =
+      revenda ? 'var(--ambar)' : 'var(--borda)';
+}
+document.addEventListener('DOMContentLoaded', trocarDestino);
+
 function abrirRevogar(id, chave) {
   document.getElementById('mrId').value = id;
   document.getElementById('mrChave').textContent = chave;

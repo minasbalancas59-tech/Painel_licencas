@@ -24,12 +24,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
     }
 }
 
-$usuarios = db()->query('SELECT id,nome,email,papel,ativo,criado_em FROM usuarios ORDER BY nome')->fetchAll();
+// revendedores tem tela propria; aqui ficam so os logins internos
+$usuarios = db()->query(
+  "SELECT id,nome,email,papel,ativo,criado_em FROM usuarios
+    WHERE papel='admin' ORDER BY nome")->fetchAll();
 
 abre_pagina('Usuários', 'usuarios');
 ?>
 <h1 class="titulo">Usuários do painel</h1>
-<p class="subtitulo">Adicione revendedores ou funcionários que emitem licenças</p>
+<p class="subtitulo">
+  Logins administrativos internos.
+  Para cadastrar parceiros, use <a href="revendedores.php">Revendedores</a> —
+  lá o cadastro inclui empresa, CNPJ e controle de estoque.
+</p>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
 
@@ -46,8 +53,8 @@ abre_pagina('Usuários', 'usuarios');
       <div><label>Senha</label><input name="senha" type="password" required></div>
       <div><label>Papel</label>
         <select name="papel">
-          <option value="revendedor">Revendedor</option>
           <option value="admin">Administrador</option>
+          <option value="revendedor">Revendedor (sem dados de empresa)</option>
         </select>
       </div>
     </div>

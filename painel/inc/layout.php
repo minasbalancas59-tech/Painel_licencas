@@ -25,14 +25,19 @@ function abre_pagina(string $titulo, string $pagina): void {
     </div>
   </div>
   <nav class="nav">
-    <a href="index.php"   class="<?= $pagina==='painel'   ?'ativo':'' ?>">Painel</a>
-    <a href="clientes.php"class="<?= $pagina==='clientes' ?'ativo':'' ?>">Clientes</a>
-    <a href="licencas.php"class="<?= $pagina==='licencas' ?'ativo':'' ?>">Licenças</a>
-    <a href="maquinas.php"class="<?= $pagina==='maquinas' ?'ativo':'' ?>">Máquinas</a>
-    <a href="relatorio.php"class="<?= $pagina==='relatorio' ?'ativo':'' ?>">Relatório</a>
-    <a href="offline.php" class="<?= $pagina==='offline'  ?'ativo':'' ?>">Ativação offline</a>
     <?php if (($u['papel']??'')==='admin'): ?>
-      <a href="usuarios.php" class="<?= $pagina==='usuarios' ?'ativo':'' ?>">Usuários</a>
+      <a href="index.php"    class="<?= $pagina==='painel'    ?'ativo':'' ?>">Painel</a>
+      <a href="clientes.php" class="<?= $pagina==='clientes'  ?'ativo':'' ?>">Clientes</a>
+      <a href="licencas.php" class="<?= $pagina==='licencas'  ?'ativo':'' ?>">Licenças</a>
+      <a href="maquinas.php" class="<?= $pagina==='maquinas'  ?'ativo':'' ?>">Máquinas</a>
+      <a href="relatorio.php"class="<?= $pagina==='relatorio' ?'ativo':'' ?>">Relatório</a>
+      <a href="revendedores.php" class="<?= $pagina==='revendedores'?'ativo':'' ?>">Revendedores</a>
+      <a href="offline.php"  class="<?= $pagina==='offline'   ?'ativo':'' ?>">Ativação offline</a>
+      <a href="usuarios.php" class="<?= $pagina==='usuarios'  ?'ativo':'' ?>">Usuários</a>
+    <?php else: ?>
+      <a href="minhas.php"   class="<?= $pagina==='minhas'    ?'ativo':'' ?>">Minhas licenças</a>
+      <a href="clientes.php" class="<?= $pagina==='clientes'  ?'ativo':'' ?>">Meus clientes</a>
+      <a href="maquinas.php" class="<?= $pagina==='maquinas'  ?'ativo':'' ?>">Máquinas</a>
     <?php endif; ?>
   </nav>
   <div class="wrap">
