@@ -178,9 +178,9 @@ $licencas = db()->query(
 // revendedores para o select de atribuicao
 // so revendedores ATIVOS podem receber licenca nova
 $revendedores = db()->query(
-  "SELECT id, nome, empresa FROM usuarios
+  "SELECT id, nome, empresa, nome_fantasia FROM usuarios
     WHERE papel='revendedor' AND ativo=1
-    ORDER BY COALESCE(empresa,nome)")->fetchAll();
+    ORDER BY COALESCE(nome_fantasia,empresa,nome)")->fetchAll();
 
 abre_pagina('Licenças', 'licencas');
 ?>
@@ -289,7 +289,7 @@ abre_pagina('Licenças', 'licencas');
         <option value="">— selecione o revendedor —</option>
         <?php foreach ($revendedores as $r): ?>
           <option value="<?= $r['id'] ?>">
-            <?= e($r['empresa'] ?: $r['nome']) ?>
+            <?= e($r['nome_fantasia'] ?: ($r['empresa'] ?: $r['nome'])) ?>
           </option>
         <?php endforeach; ?>
       </select>
