@@ -34,7 +34,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         ];
         $_SESSION['ultimo_acesso'] = time();
         log_acao(null, null, null, 'login', 'ok', $u['email']);
-        header('Location: index.php');
+        // index.php e o painel do admin e exige papel admin; mandar o
+        // revendedor para la significa cair num 403 logo apos entrar
+        header('Location: ' . ($u['papel'] === 'admin' ? 'index.php' : 'minhas.php'));
         exit;
     }
     if ($bloqueado) {
