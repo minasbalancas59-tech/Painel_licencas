@@ -1,12 +1,12 @@
 unit uFrmAtivacao_exemplo;
 
 { =====================================================================
-  EXEMPLO de tela de ativacao (esqueleto).
-  Mostra o "Codigo da Maquina", permite ativar online (digitando a
-  chave) ou colar o "Codigo de Ativacao" gerado no painel (offline).
+  Tela de ativacao do TS5 - liga a UI as units uAtivacao / uAtivacaoOnline.
+  Adapte os nomes dos componentes ao seu .dfm.
 
-  Adapte os nomes dos componentes ao seu .dfm. Este arquivo serve de
-  referencia de como amarrar a UI as units uAtivacao / uAtivacaoOnline.
+  IMPORTANTE: apos ativar (online ou offline), chama GravarChaveLicenca
+  (uRevalidacao) para que a revalidacao periodica a cada 7 dias saiba
+  qual chave consultar no servidor.
   ===================================================================== }
 
 interface
@@ -14,7 +14,7 @@ interface
 uses
   Winapi.Windows, Winapi.Messages, System.SysUtils, System.Classes,
   Vcl.Controls, Vcl.Forms, Vcl.StdCtrls, Vcl.ExtCtrls, Vcl.Clipbrd,
-  uAtivacao, uAtivacaoOnline;
+  uAtivacao, uAtivacaoOnline, uRevalidacao;
 
 type
   TFrmAtivacao = class(TForm)
@@ -33,7 +33,7 @@ type
     lblTitOnline: TLabel;
     lblAjudaOnline: TLabel;
     lblChave: TLabel;
-    edtChave: TEdit;             // chave TS6X-....
+    edtChave: TEdit;             // chave TS5X-....
     btnAtivarOnline: TButton;
     pnlOffline: TPanel;
     lblTitOffline: TLabel;
@@ -57,7 +57,6 @@ implementation
 
 procedure TFrmAtivacao.FormShow(Sender: TObject);
 begin
-  // mostra o codigo da maquina para o cliente informar ao suporte
   lblFingerprint.Caption := Licenciamento.ObterFingerprint;
   lblStatus.Caption := 'Aguardando ativacao...';
 end;
@@ -78,6 +77,7 @@ begin
   r := AtivarOnline(edtChave.Text);
   if r.Ok then
   begin
+    GravarChaveLicenca(Trim(edtChave.Text));   // habilita revalidacao periodica
     lblStatus.Caption := Format('Ativado! Cliente: %s. Expira em %s.',
                                 [r.Cliente, r.Expira]);
     ModalResult := mrOk;   // libera o app
@@ -96,6 +96,8 @@ begin
   if res.Valida then
   begin
     Licenciamento.SalvarLicenca(codigo);
+    if res.Chave <> '' then
+      GravarChaveLicenca(res.Chave);   // habilita revalidacao periodica
     lblStatus.Caption := Format('Ativado offline! Cliente: %s. Expira em %s.',
                                 [res.Cliente, DateToStr(res.Expira)]);
     ModalResult := mrOk;

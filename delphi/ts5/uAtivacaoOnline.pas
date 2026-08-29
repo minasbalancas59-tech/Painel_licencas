@@ -4,6 +4,10 @@ unit uAtivacaoOnline;
   Ativacao ONLINE - fala com a API na sua VPS.
   Depende de uAtivacao (fingerprint, salvar licenca).
   Usa System.Net.HttpClient (Delphi XE8+ / 10.x).
+
+  TS5: sem fallback de hardkey/Rockey2. SoftwareLiberado so retorna
+  True se houver licenca web valida. Sem licenca = bloqueia (o
+  chamador deve terminar o app - ver PATCH_Unit1.md).
   ===================================================================== }
 
 interface
@@ -28,15 +32,11 @@ type
 { Ativa online: manda chave + fingerprint, recebe e salva a licenca. }
 function AtivarOnline(const AChave: string): TRespostaAtivacao;
 
-{ Fluxo de inicializacao completo com fallback para Rockey2.
-  Retorna True se o software pode rodar. }
+{ Checagem de inicializacao: True se ha licenca web valida.
+  Sem fallback - se False, o app deve bloquear a abertura. }
 function SoftwareLiberado(out AMsg: string): Boolean;
 
 implementation
-
-{ declare aqui sua funcao existente de checagem do Rockey2, ou
-  inclua a unit correspondente. Ex.: uses uRockey2; ... }
-function Rockey2Presente: Boolean; forward;
 
 function AtivarOnline(const AChave: string): TRespostaAtivacao;
 var
@@ -87,7 +87,6 @@ begin
       if jo.GetValue<Boolean>('ok', False) then
       begin
         licenca := jo.GetValue<string>('licenca','');
-        { valida localmente antes de salvar (garante que confere com a maquina) }
         valida := Licenciamento.ValidarLicencaAssinada(licenca);
         if valida.Valida then
         begin
@@ -111,18 +110,10 @@ begin
   end;
 end;
 
-function Rockey2Presente: Boolean;
-begin
-  { >>> SUBSTITUA pela sua checagem real do dongle Rockey2 <<<
-    Durante a transicao, se o dongle estiver presente e valido, libera. }
-  Result := False;
-end;
-
 function SoftwareLiberado(out AMsg: string): Boolean;
 var
   r: TResultadoLicenca;
 begin
-  { 1) licenca web (offline, sem internet) }
   r := Licenciamento.VerificarLicenca;
   if r.Valida then
   begin
@@ -131,14 +122,6 @@ begin
     Exit(True);
   end;
 
-  { 2) fallback: Rockey2 durante a transicao }
-  if Rockey2Presente then
-  begin
-    AMsg := 'Licenciado via dongle Rockey2.';
-    Exit(True);
-  end;
-
-  { 3) nada valido -> abrir tela de ativacao }
   AMsg := r.Mensagem;
   Result := False;
 end;
