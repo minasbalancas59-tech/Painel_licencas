@@ -5,7 +5,27 @@ require 'inc/escopo.php';
 exige_login();
 exige_admin_escopo();
 
-$msg=''; $tipo=''; $chaveGerada='';
+/* =====================================================================
+ *  LICENCAS - emissao e gestao
+ * =====================================================================
+ *  IMPORTANTE (tecnico): a licenca entregue ao cliente e um JSON
+ *  ASSINADO. Mexer nas colunas aqui NAO altera o arquivo que ja esta
+ *  na maquina dele - o api/ativar.php re-assina com os valores atuais
+ *  a cada chamada, e o cliente so recebe a versao nova na proxima
+ *  revalidacao (ciclo de 7 dias do uRevalidacao.pas).
+ *
+ *  Dai a separacao das acoes:
+ *    EDITAR  - vinculo, limite de transferencias e anotacao interna.
+ *              Nada disso entra no payload assinado.
+ *    RENOVAR - estende a validade. Propaga na revalidacao, com log.
+ *    REVOGAR - corta o acesso, com motivo obrigatorio.
+ *
+ *  Produto, tier e modulos nao sao editaveis de proposito: mudariam o
+ *  que foi contratado sem deixar rastro. Nesse caso, revogue e emita
+ *  outra licenca.
+ * ===================================================================== */
+
+$msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false;
 
 // --- emitir nova licenca (v2: produto + tier) ----------------------
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
@@ -142,7 +162,74 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='revogar') {
     }
 }
 
-// rotulos legiveis dos motivos (usados no form e na listagem)
+
+// --- editar (somente campos fora do payload assinado) ---------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='editar') {
+    if (csrf_valido()) {
+        $id  = (int)$_POST['id'];
+        $u   = usuario_logado();
+        $novoCli = (int)($_POST['cliente_id'] ?? 0) ?: null;
+        $novoRev = (int)($_POST['revendedor_id'] ?? 0) ?: null;
+        $maxT    = max(0, min(99, (int)($_POST['max_transferencias'] ?? 3)));
+        $obs     = trim($_POST['observacao'] ?? '');
+
+        db()->prepare(
+          'UPDATE licencas
+              SET cliente_id=?, revendedor_id=?, max_transferencias=?, observacao=?
+            WHERE id=?')->execute([$novoCli, $novoRev, $maxT, ($obs ?: null), $id]);
+
+        $lr = db()->prepare('SELECT chave FROM licencas WHERE id=?');
+        $lr->execute([$id]);
+        log_acao_painel($id, $lr->fetchColumn(), null, 'editar', 'ok',
+            $u['id'], $u['nome'] ?? null, null, null,
+            'vinculo/limite/anotacao alterados no painel');
+        $msg='Licença atualizada.'; $tipo='ok';
+    }
+}
+
+// --- renovar --------------------------------------------------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
+    if (csrf_valido()) {
+        $id    = (int)$_POST['id'];
+        $meses = max(1, min(60, (int)($_POST['meses_renov'] ?? 12)));
+        $u     = usuario_logado();
+
+        $lr = db()->prepare(
+          'SELECT l.chave, l.expira_em, p.codigo AS pc, t.codigo AS tc
+             FROM licencas l
+             LEFT JOIN produtos p ON p.id=l.produto_id
+             LEFT JOIN tiers t    ON t.id=l.tier_id
+            WHERE l.id=?');
+        $lr->execute([$id]);
+        $lrow = $lr->fetch();
+
+        if (!$lrow) { $msg='Licença não encontrada.'; $tipo='erro'; }
+        else {
+            // renova a partir do vencimento atual quando ele ainda esta
+            // no futuro (nao se perde o tempo ja pago); se ja venceu,
+            // conta a partir de hoje
+            $base = max(strtotime($lrow['expira_em']), strtotime(date('Y-m-d')));
+            $novo = date('Y-m-d', strtotime("+$meses months", $base));
+
+            db()->prepare(
+              'UPDATE licencas
+                  SET expira_em=?, status=IF(fingerprint IS NULL,"nova","ativa"),
+                      renovacoes=renovacoes+1, renovada_em=NOW()
+                WHERE id=?')->execute([$novo, $id]);
+
+            log_acao_painel($id, $lrow['chave'], null, 'renovar', 'ok',
+                $u['id'], $u['nome'] ?? null, $lrow['pc'], $lrow['tc'],
+                "de {$lrow['expira_em']} para $novo (+{$meses}m)");
+
+            $msg = 'Licença renovada até '.date('d/m/Y', strtotime($novo))
+                 . '. O cliente recebe a nova validade na próxima '
+                 . 'revalidação (até 7 dias).';
+            $tipo='ok';
+        }
+    }
+}
+
+// rotulos legiveis dos motivos de revogacao
 $ROTULO_MOTIVO = [
     'inadimplencia' => 'Inadimplência',
     'cancelamento'  => 'Cancelamento pelo cliente',
@@ -152,40 +239,174 @@ $ROTULO_MOTIVO = [
     'outro'         => 'Outro',
 ];
 
-$clientes = db()->query('SELECT id,razao_social FROM clientes ORDER BY razao_social')->fetchAll();
+$clientes = db()->query(
+  'SELECT id,razao_social,nome_fantasia FROM clientes ORDER BY razao_social')->fetchAll();
 $preselect = (int)($_GET['cliente'] ?? 0);
+if ($preselect) $abrirEmissao = true;
 
-// catalogo de produtos e tiers para os selects encadeados
-$produtos = db()->query('SELECT id,codigo,nome FROM produtos WHERE ativo=1 ORDER BY codigo')->fetchAll();
-$tiers    = db()->query(
+$produtos = db()->query(
+  'SELECT id,codigo,nome FROM produtos WHERE ativo=1 ORDER BY codigo')->fetchAll();
+$tiers = db()->query(
   'SELECT id,produto_id,codigo,nome,nivel FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
 
-// LEFT JOIN em clientes: licenca em estoque do revendedor ainda nao tem
-// cliente. Com JOIN simples, essas licencas sumiriam da lista.
-$licencas = db()->query(
-  'SELECT l.*, c.razao_social, u.nome AS revendedor_nome,
-          ur.nome AS revogada_por_nome,
-          p.codigo AS produto_codigo, t.codigo AS tier_codigo, t.nome AS tier_nome
-     FROM licencas l
-     LEFT JOIN clientes c ON c.id=l.cliente_id
-     LEFT JOIN usuarios u ON u.id=l.revendedor_id
-     LEFT JOIN usuarios ur ON ur.id=l.revogada_por
-     LEFT JOIN produtos p ON p.id=l.produto_id
-     LEFT JOIN tiers t    ON t.id=l.tier_id
-    ORDER BY l.id DESC LIMIT 200')->fetchAll();
-
-// revendedores para o select de atribuicao
-// so revendedores ATIVOS podem receber licenca nova
 $revendedores = db()->query(
   "SELECT id, nome, empresa, nome_fantasia FROM usuarios
     WHERE papel='revendedor' AND ativo=1
     ORDER BY COALESCE(nome_fantasia,empresa,nome)")->fetchAll();
 
+// todos os revendedores (inclusive inativos) para o filtro e a edicao
+$revTodos = db()->query(
+  "SELECT id, nome, empresa, nome_fantasia FROM usuarios
+    WHERE papel='revendedor' ORDER BY COALESCE(nome_fantasia,empresa,nome)")->fetchAll();
+
+/* =====================================================================
+ *  FILTROS
+ * ===================================================================== */
+$fBusca   = trim($_GET['q'] ?? '');
+$fCliente = (int)($_GET['f_cliente'] ?? 0);
+$fRev     = trim($_GET['f_rev'] ?? '');      // id | 'direta'
+$fProduto = trim($_GET['produto'] ?? '');
+$fTier    = (int)($_GET['tier'] ?? 0);
+$fStatus  = trim($_GET['status'] ?? '');
+$fTipo    = trim($_GET['tipo_lic'] ?? '');
+$fVenc    = trim($_GET['venc'] ?? '');       // 30 | 60 | 90 | vencidas
+$fDe      = trim($_GET['de'] ?? '');
+$fAte     = trim($_GET['ate'] ?? '');
+$fOrdem   = trim($_GET['ordem'] ?? 'recentes');
+
+$where = []; $args = [];
+
+if ($fBusca !== '') {
+    $where[] = '(l.chave LIKE ? OR c.razao_social LIKE ? OR c.nome_fantasia LIKE ? '
+             . 'OR c.cnpj LIKE ? OR m.maq_nome LIKE ? OR l.fingerprint LIKE ?)';
+    for ($i=0;$i<6;$i++) $args[] = '%'.$fBusca.'%';
+}
+if ($fCliente > 0) { $where[] = 'l.cliente_id = ?'; $args[] = $fCliente; }
+
+if ($fRev === 'direta')      $where[] = 'l.revendedor_id IS NULL';
+elseif ($fRev !== '')      { $where[] = 'l.revendedor_id = ?'; $args[] = (int)$fRev; }
+
+if ($fProduto !== '') { $where[] = 'p.codigo = ?'; $args[] = $fProduto; }
+if ($fTier > 0)       { $where[] = 'l.tier_id = ?'; $args[] = $fTier; }
+
+switch ($fStatus) {
+    case 'estoque':  $where[] = 'l.cliente_id IS NULL'; break;
+    case 'naoativa': $where[] = "l.fingerprint IS NULL AND l.status<>'revogada'"; break;
+    case '':         break;
+    default:         $where[] = 'l.status = ?'; $args[] = $fStatus;
+}
+if ($fTipo !== '') { $where[] = 'l.tipo_licenca = ?'; $args[] = $fTipo; }
+
+switch ($fVenc) {
+    case 'vencidas':
+        $where[] = 'l.expira_em < CURDATE()'; break;
+    case '30': case '60': case '90':
+        // valor vem de uma lista fixa; INTERVAL ? DAY nao funciona em
+        // prepare nativo, por isso o inteiro entra direto
+        $d = (int)$fVenc;
+        $where[] = "l.expira_em BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL $d DAY)";
+        break;
+}
+
+if ($fDe  !== '') { $where[] = 'l.emitido_em >= ?'; $args[] = $fDe; }
+if ($fAte !== '') { $where[] = 'l.emitido_em <= ?'; $args[] = $fAte; }
+
+$whereSql = $where ? ('WHERE '.implode(' AND ', $where)) : '';
+
+$ORDENS = [
+    'recentes' => 'l.id DESC',
+    'antigas'  => 'l.id ASC',
+    'vence'    => 'l.expira_em ASC',
+    'cliente'  => 'c.razao_social ASC, l.expira_em ASC',
+];
+$orderSql = $ORDENS[$fOrdem] ?? $ORDENS['recentes'];
+
+$juncoes =
+  'FROM licencas l
+     LEFT JOIN clientes c  ON c.id = l.cliente_id
+     LEFT JOIN usuarios u  ON u.id = l.revendedor_id
+     LEFT JOIN usuarios ur ON ur.id = l.revogada_por
+     LEFT JOIN usuarios ue ON ue.id = l.criado_por
+     LEFT JOIN produtos p  ON p.id = l.produto_id
+     LEFT JOIN tiers t     ON t.id = l.tier_id
+     LEFT JOIN maquinas m  ON m.fingerprint = l.fingerprint';
+
+// --- exportacao CSV (respeita os filtros) ----------------------------
+if (($_GET['export'] ?? '') === 'csv') {
+    $stX = db()->prepare(
+      "SELECT l.chave, p.codigo AS produto, t.nome AS tier, l.tipo_licenca,
+              c.razao_social, c.cnpj, u.nome AS revendedor, l.status,
+              l.emitido_em, l.expira_em, l.fingerprint, m.maq_nome,
+              m.ultimo_acesso, l.transferencias, l.renovacoes
+         $juncoes $whereSql ORDER BY $orderSql");
+    $stX->execute($args);
+
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename=licencas_'.date('Y-m-d').'.csv');
+    $out = fopen('php://output', 'w');
+    fwrite($out, "\xEF\xBB\xBF");   // BOM para o Excel abrir acentos certo
+    fputcsv($out, ['Chave','Software','Tipo','Licenca','Cliente','CNPJ',
+                   'Revendedor','Status','Emitida','Expira','Fingerprint',
+                   'Maquina','Ultimo acesso','Transferencias','Renovacoes'], ';');
+    while ($r = $stX->fetch(PDO::FETCH_NUM)) fputcsv($out, $r, ';');
+    fclose($out);
+    exit;
+}
+
+// --- paginacao --------------------------------------------------------
+$porPagina = 40;
+$pagina = max(1, (int)($_GET['pg'] ?? 1));
+$offset = ($pagina - 1) * $porPagina;
+
+$stC = db()->prepare("SELECT COUNT(*) $juncoes $whereSql");
+$stC->execute($args);
+$total = (int)$stC->fetchColumn();
+$totalPaginas = max(1, (int)ceil($total / $porPagina));
+
+$stL = db()->prepare(
+  "SELECT l.*, c.razao_social, c.nome_fantasia AS cli_fantasia, c.cnpj,
+          u.nome AS rev_nome, u.empresa AS rev_empresa, u.nome_fantasia AS rev_fantasia,
+          ur.nome AS revogada_por_nome, ue.nome AS emitida_por_nome,
+          p.codigo AS produto_codigo, t.codigo AS tier_codigo, t.nome AS tier_nome,
+          m.maq_nome, m.maq_usuario, m.maq_so, m.primeiro_acesso,
+          m.ultimo_acesso, m.aberturas, m.ip_ultimo,
+          DATEDIFF(l.expira_em, CURDATE()) AS dias_restantes,
+          DATEDIFF(NOW(), m.ultimo_acesso) AS dias_sem_ver
+     $juncoes
+   $whereSql
+   ORDER BY $orderSql
+   LIMIT $porPagina OFFSET $offset");
+$stL->execute($args);
+$licencas = $stL->fetchAll();
+
+// --- indicadores do filtro atual -------------------------------------
+$stR = db()->prepare(
+  "SELECT COUNT(*) AS n,
+          SUM(l.status='ativa') AS ativas,
+          SUM(l.cliente_id IS NULL) AS estoque,
+          SUM(l.status='ativa' AND l.expira_em BETWEEN CURDATE()
+              AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)) AS vencendo,
+          SUM(l.expira_em < CURDATE()) AS vencidas
+     $juncoes $whereSql");
+$stR->execute($args);
+$resumo = $stR->fetch();
+
+function linkLic(array $novo = []) {
+    $b = [];
+    foreach (['q','f_cliente','f_rev','produto','tier','status','tipo_lic',
+              'venc','de','ate','ordem','pg'] as $k) {
+        if (isset($_GET[$k]) && $_GET[$k] !== '') $b[$k] = $_GET[$k];
+    }
+    return 'licencas.php?'.http_build_query(array_merge($b, $novo));
+}
+$temFiltro = $fBusca!=='' || $fCliente || $fRev!=='' || $fProduto!=='' || $fTier
+          || $fStatus!=='' || $fTipo!=='' || $fVenc!=='' || $fDe!=='' || $fAte!=='';
+
 abre_pagina('Licenças', 'licencas');
 ?>
 <h1 class="titulo">Licenças</h1>
-<p class="subtitulo">Emita chaves de ativação e acompanhe o uso</p>
+<p class="subtitulo">Emita, acompanhe, renove e revogue as chaves de ativação</p>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
 <?php if ($chaveGerada): ?>
@@ -193,14 +414,19 @@ abre_pagina('Licenças', 'licencas');
     <h3>Chave gerada</h3>
     <div class="codigo"><?= e($chaveGerada) ?></div>
     <p class="subtitulo" style="margin-top:12px">
-      O cliente digita esta chave no Total Scale (ativação online) ou você a usa
+      O cliente digita esta chave no software (ativação online) ou você a usa
       na aba <a href="offline.php">Ativação offline</a> se o PC dele não tiver internet.
     </p>
   </div>
 <?php endif; ?>
 
 <div class="card">
-  <h3>Emitir nova licença</h3>
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Emitir licença</h3>
+    <button type="button" class="btn" onclick="alternar('boxEmitir')">
+      + Emitir nova licença</button>
+  </div>
+  <div id="boxEmitir" style="<?= $abrirEmissao ? '' : 'display:none' ?>;margin-top:16px">
   <form method="post">
     <input type="hidden" name="acao" value="emitir">
     <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
@@ -320,89 +546,360 @@ abre_pagina('Licenças', 'licencas');
       <label style="text-transform:none;margin:0"><input type="checkbox" name="modulos[]" value="LPR" style="width:auto"> LPR (câmera)</label>
     </div>
 
-    <button class="btn" style="margin-top:16px">Emitir licença</button>
+    <div style="margin-top:16px">
+      <button class="btn">Emitir licença</button>
+      <button type="button" class="btn sec" style="margin-left:8px"
+              onclick="alternar('boxEmitir')">Cancelar</button>
+    </div>
+  </form>
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="n"><?= (int)$resumo['n'] ?></div>
+    <div class="l"><?= $temFiltro ? 'No filtro' : 'Total emitidas' ?></div></div>
+  <div class="stat"><div class="n" style="color:var(--verde)"><?= (int)$resumo['ativas'] ?></div>
+    <div class="l">Ativas</div></div>
+  <div class="stat"><div class="n" style="color:var(--ambar)"><?= (int)$resumo['vencendo'] ?></div>
+    <div class="l">Vencem em 30 dias</div></div>
+  <div class="stat"><div class="n" style="color:var(--vermelho)"><?= (int)$resumo['vencidas'] ?></div>
+    <div class="l">Vencidas</div></div>
+</div>
+
+<div class="card">
+  <h3>Filtros</h3>
+  <form method="get">
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:14px">
+      <div>
+        <label>Buscar por chave, cliente, CNPJ ou máquina</label>
+        <input type="text" name="q" value="<?= e($fBusca) ?>">
+      </div>
+      <div>
+        <label>Cliente</label>
+        <select name="f_cliente">
+          <option value="">— todos —</option>
+          <?php foreach ($clientes as $c): ?>
+            <option value="<?= $c['id'] ?>" <?= $fCliente===(int)$c['id']?'selected':'' ?>>
+              <?= e($c['nome_fantasia'] ?: $c['razao_social']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Origem</label>
+        <select name="f_rev">
+          <option value="">— todas —</option>
+          <option value="direta" <?= $fRev==='direta'?'selected':'' ?>>Venda direta</option>
+          <?php foreach ($revTodos as $r): ?>
+            <option value="<?= $r['id'] ?>" <?= $fRev===(string)$r['id']?'selected':'' ?>>
+              <?= e($r['nome_fantasia'] ?: ($r['empresa'] ?: $r['nome'])) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-top:12px">
+      <div>
+        <label>Software</label>
+        <select name="produto">
+          <option value="">— todos —</option>
+          <?php foreach ($produtos as $p): ?>
+            <option value="<?= e($p['codigo']) ?>" <?= $fProduto===$p['codigo']?'selected':'' ?>>
+              <?= e($p['nome']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Tipo de licença</label>
+        <select name="tier">
+          <option value="">— todos —</option>
+          <?php foreach ($tiers as $t): ?>
+            <option value="<?= $t['id'] ?>" <?= $fTier===(int)$t['id']?'selected':'' ?>>
+              <?= e($t['nome']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Situação</label>
+        <select name="status">
+          <option value="">— todas —</option>
+          <option value="ativa"    <?= $fStatus==='ativa'   ?'selected':'' ?>>Ativa</option>
+          <option value="nova"     <?= $fStatus==='nova'    ?'selected':'' ?>>Nova</option>
+          <option value="revogada" <?= $fStatus==='revogada'?'selected':'' ?>>Revogada</option>
+          <option value="expirada" <?= $fStatus==='expirada'?'selected':'' ?>>Expirada</option>
+          <option value="estoque"  <?= $fStatus==='estoque' ?'selected':'' ?>>Em estoque</option>
+          <option value="naoativa" <?= $fStatus==='naoativa'?'selected':'' ?>>Nunca ativada</option>
+        </select>
+      </div>
+      <div>
+        <label>Venda / demo</label>
+        <select name="tipo_lic">
+          <option value="">— todos —</option>
+          <option value="venda" <?= $fTipo==='venda'?'selected':'' ?>>Venda</option>
+          <option value="demo"  <?= $fTipo==='demo' ?'selected':'' ?>>Demonstração</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-top:12px">
+      <div>
+        <label>Vencimento</label>
+        <select name="venc">
+          <option value="">— qualquer —</option>
+          <option value="30"       <?= $fVenc==='30'      ?'selected':'' ?>>Próximos 30 dias</option>
+          <option value="60"       <?= $fVenc==='60'      ?'selected':'' ?>>Próximos 60 dias</option>
+          <option value="90"       <?= $fVenc==='90'      ?'selected':'' ?>>Próximos 90 dias</option>
+          <option value="vencidas" <?= $fVenc==='vencidas'?'selected':'' ?>>Já vencidas</option>
+        </select>
+      </div>
+      <div><label>Emitidas de</label>
+        <input type="date" name="de" value="<?= e($fDe) ?>"></div>
+      <div><label>até</label>
+        <input type="date" name="ate" value="<?= e($fAte) ?>"></div>
+      <div>
+        <label>Ordenar por</label>
+        <select name="ordem">
+          <option value="recentes" <?= $fOrdem==='recentes'?'selected':'' ?>>Mais recentes</option>
+          <option value="antigas"  <?= $fOrdem==='antigas' ?'selected':'' ?>>Mais antigas</option>
+          <option value="vence"    <?= $fOrdem==='vence'   ?'selected':'' ?>>Vencimento</option>
+          <option value="cliente"  <?= $fOrdem==='cliente' ?'selected':'' ?>>Cliente</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:14px;display:flex;gap:8px;align-items:center">
+      <button class="btn">Filtrar</button>
+      <?php if ($temFiltro): ?>
+        <a class="btn sec" href="licencas.php">Limpar</a>
+      <?php endif; ?>
+      <a class="btn sec" href="<?= e(linkLic(['export'=>'csv'])) ?>">Exportar CSV</a>
+      <span class="subtitulo" style="margin:0">
+        <?= number_format($total,0,',','.') ?> licença(s)
+      </span>
+    </div>
   </form>
 </div>
 
 <div class="card">
   <h3>Licenças emitidas</h3>
   <table>
-    <thead><tr><th>Chave</th><th>Cliente</th><th>Software / Tipo</th><th>Expira</th><th>Máquina</th><th>Status</th><th></th></tr></thead>
+    <thead><tr>
+      <th>Chave</th><th>Software / Tipo</th><th>Cliente</th><th>Origem</th>
+      <th>Emitida</th><th>Expira</th><th>Situação</th><th>Máquina</th><th></th>
+    </tr></thead>
     <tbody>
     <?php if (!$licencas): ?>
-      <tr><td colspan="7" style="color:var(--texto-2)">Nenhuma licença emitida.</td></tr>
+      <tr><td colspan="9" style="color:var(--texto-2)">
+        Nenhuma licença para os filtros escolhidos.</td></tr>
     <?php else: foreach ($licencas as $l):
-        $exp = strtotime($l['expira_em']);
-        $venceu = $exp < strtotime(date('Y-m-d'));
-        $prodTier = $l['produto_codigo']
-            ? strtoupper($l['produto_codigo']).' · '.($l['tier_nome'] ?: $l['tier_codigo'])
-            : ('—'.($l['modulos']? ' ('.$l['modulos'].')':''));
+        $dr  = (int)$l['dias_restantes'];
+        $cor = $dr < 0 ? 'var(--vermelho)' : ($dr <= 30 ? 'var(--ambar)' : 'var(--texto-2)');
+        $revRot = $l['rev_fantasia'] ?: ($l['rev_empresa'] ?: $l['rev_nome']);
     ?>
       <tr>
-        <td class="mono"><?= e($l['chave']) ?></td>
-        <td><?= e($l['razao_social'] ?? '— estoque —') ?>
-          <?php if (!empty($l['revendedor_nome'])): ?>
-            <br><span style="font-size:10px;color:var(--texto-2)">
-              rev: <?= e($l['revendedor_nome']) ?></span>
+        <td class="mono" style="font-size:11px">
+          <a href="#" onclick="detalhe(<?= $l['id'] ?>);return false;"><?= e($l['chave']) ?></a>
+          <?php if (($l['tipo_licenca'] ?? '')==='demo'): ?>
+            <br><span class="badge nova" style="font-size:10px">demo</span>
           <?php endif; ?>
-          <?php if (($l['tipo_licenca'] ?? '') === 'demo'): ?>
-            <br><span class="badge nova" style="font-size:10px">demonstração</span>
+          <?php if ((int)$l['renovacoes'] > 0): ?>
+            <br><span style="font-size:10px;color:var(--texto-2)">
+              <?= (int)$l['renovacoes'] ?>ª renovação</span>
           <?php endif; ?>
         </td>
-        <td class="mono" style="font-size:11px"><?= e($prodTier) ?></td>
-        <td class="mono" style="<?= $venceu?'color:var(--vermelho)':'' ?>"><?= date('d/m/Y',$exp) ?></td>
-        <td class="mono" style="font-size:11px"><?= e($l['fingerprint'] ? substr($l['fingerprint'],0,14).'…' : '—') ?></td>
+        <td class="mono" style="font-size:11px">
+          <?= e(strtoupper($l['produto_codigo'] ?? '—')) ?>
+          <?= $l['tier_nome'] ? '· '.e($l['tier_nome']) : '' ?></td>
+        <td style="font-size:12px">
+          <?php if ($l['cliente_id']): ?>
+            <a href="cliente.php?id=<?= (int)$l['cliente_id'] ?>">
+              <?= e($l['cli_fantasia'] ?: $l['razao_social']) ?></a>
+          <?php else: ?>
+            <span style="color:var(--texto-2)">— estoque —</span>
+          <?php endif; ?>
+        </td>
+        <td style="font-size:11px">
+          <?php if ($l['revendedor_id']): ?>
+            <a href="revendedor.php?id=<?= (int)$l['revendedor_id'] ?>"><?= e($revRot) ?></a>
+          <?php else: ?>
+            <span style="color:var(--texto-2)">direta</span>
+          <?php endif; ?>
+        </td>
+        <td class="mono" style="font-size:11px">
+          <?= date('d/m/Y', strtotime($l['emitido_em'])) ?></td>
+        <td class="mono" style="font-size:11px">
+          <?= date('d/m/Y', strtotime($l['expira_em'])) ?>
+          <br><span style="font-size:10px;color:<?= $cor ?>">
+            <?= $dr < 0 ? abs($dr).'d atrás' : 'em '.$dr.'d' ?></span></td>
         <td>
           <span class="badge <?= e($l['status']) ?>"><?= e($l['status']) ?></span>
           <?php if ($l['status']==='revogada'): ?>
-            <br><span style="font-size:10px;color:var(--texto-2)"
-                  title="<?= e($l['obs_revogacao'] ?? '') ?>">
-              <?= e($ROTULO_MOTIVO[$l['motivo_revogacao']] ?? 'motivo não informado') ?>
-              <?php if ($l['revogada_em']): ?>
-                <br><?= date('d/m/Y', strtotime($l['revogada_em'])) ?>
-                <?= $l['revogada_por_nome'] ? '· '.e($l['revogada_por_nome']) : '' ?>
-              <?php endif; ?>
-            </span>
+            <br><span style="font-size:10px;color:var(--texto-2)">
+              <?= e($ROTULO_MOTIVO[$l['motivo_revogacao']] ?? 'sem motivo') ?></span>
           <?php endif; ?>
         </td>
-        <td>
-          <?php if ($l['status']!=='revogada'): ?>
-          <button class="btn perigo pequeno"
-                  onclick="abrirRevogar(<?= $l['id'] ?>, '<?= e($l['chave']) ?>')">
-            Revogar
-          </button>
+        <td class="mono" style="font-size:11px">
+          <?php if ($l['fingerprint']): ?>
+            <?= e($l['maq_nome'] ?: substr($l['fingerprint'],0,12).'…') ?>
+          <?php else: ?>
+            <span style="color:var(--azul)">não ativada</span>
           <?php endif; ?>
+        </td>
+        <td><button type="button" class="btn sec pequeno"
+                    onclick="detalhe(<?= $l['id'] ?>)">Detalhes</button></td>
+      </tr>
+
+      <tr id="det<?= $l['id'] ?>" style="display:none">
+        <td colspan="9" style="background:var(--bg-3);padding:16px">
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
+            <div>
+              <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">LICENÇA</h4>
+              <table style="font-size:11px">
+                <tr><td style="color:var(--texto-2)">Chave</td>
+                    <td class="mono"><?= e($l['chave']) ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Módulos</td>
+                    <td class="mono"><?= e($l['modulos'] ?: '—') ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Emitida por</td>
+                    <td><?= e($l['emitida_por_nome'] ?: '—') ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Carência</td>
+                    <td><?= (int)($l['carencia_dias'] ?? 0) ?> dias</td></tr>
+                <tr><td style="color:var(--texto-2)">Transferências</td>
+                    <td><?= (int)$l['transferencias'] ?> de
+                        <?= (int)($l['max_transferencias'] ?? 3) ?></td></tr>
+                <tr><td style="color:var(--texto-2)">Renovações</td>
+                    <td><?= (int)$l['renovacoes'] ?>
+                        <?= $l['renovada_em']
+                            ? '· última '.date('d/m/Y', strtotime($l['renovada_em'])) : '' ?></td></tr>
+              </table>
+              <?php if (!empty($l['observacao'])): ?>
+                <p style="font-size:11px;margin-top:8px;font-style:italic">
+                  <?= e($l['observacao']) ?></p>
+              <?php endif; ?>
+            </div>
+
+            <div>
+              <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">MÁQUINA</h4>
+              <?php if (!$l['fingerprint']): ?>
+                <p style="font-size:11px;color:var(--texto-2)">Ainda não ativada.</p>
+              <?php else: ?>
+                <table style="font-size:11px">
+                  <tr><td style="color:var(--texto-2)">Código</td>
+                      <td class="mono"><?= e($l['fingerprint']) ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Nome do PC</td>
+                      <td><?= e($l['maq_nome'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Usuário</td>
+                      <td><?= e($l['maq_usuario'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Sistema</td>
+                      <td><?= e($l['maq_so'] ?: '—') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Último acesso</td>
+                      <td><?= $l['ultimo_acesso']
+                              ? date('d/m/Y H:i', strtotime($l['ultimo_acesso'])) : '—' ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Aberturas</td>
+                      <td class="mono"><?= (int)$l['aberturas'] ?></td></tr>
+                </table>
+                <a class="btn sec pequeno" style="margin-top:8px"
+                   href="maquina.php?fp=<?= urlencode($l['fingerprint']) ?>">Ver uso</a>
+              <?php endif; ?>
+            </div>
+
+            <div>
+              <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">AÇÕES</h4>
+              <?php if ($l['status']!=='revogada'): ?>
+                <form method="post" action="<?= e(linkLic()) ?>"
+                      style="display:flex;gap:8px;align-items:flex-end;margin-bottom:12px">
+                  <input type="hidden" name="acao" value="renovar">
+                  <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                  <input type="hidden" name="id" value="<?= $l['id'] ?>">
+                  <div><label style="font-size:11px">Renovar por</label>
+                    <select name="meses_renov">
+                      <option value="6">6 meses</option>
+                      <option value="12" selected>12 meses</option>
+                      <option value="24">24 meses</option>
+                    </select></div>
+                  <button class="btn pequeno">Renovar</button>
+                </form>
+
+                <button type="button" class="btn sec pequeno"
+                        onclick="alternar('edt<?= $l['id'] ?>')">Editar</button>
+                <button type="button" class="btn perigo pequeno"
+                        onclick="abrirRevogar(<?= $l['id'] ?>, '<?= e($l['chave']) ?>')">
+                  Revogar</button>
+
+                <div id="edt<?= $l['id'] ?>" style="display:none;margin-top:12px">
+                  <form method="post" action="<?= e(linkLic()) ?>">
+                    <input type="hidden" name="acao" value="editar">
+                    <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                    <input type="hidden" name="id" value="<?= $l['id'] ?>">
+                    <label style="font-size:11px">Cliente</label>
+                    <select name="cliente_id">
+                      <option value="">— sem cliente (estoque) —</option>
+                      <?php foreach ($clientes as $c): ?>
+                        <option value="<?= $c['id'] ?>"
+                          <?= (int)$l['cliente_id']===(int)$c['id']?'selected':'' ?>>
+                          <?= e($c['nome_fantasia'] ?: $c['razao_social']) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <label style="font-size:11px;margin-top:8px">Revendedor</label>
+                    <select name="revendedor_id">
+                      <option value="">— venda direta —</option>
+                      <?php foreach ($revTodos as $r): ?>
+                        <option value="<?= $r['id'] ?>"
+                          <?= (int)$l['revendedor_id']===(int)$r['id']?'selected':'' ?>>
+                          <?= e($r['nome_fantasia'] ?: ($r['empresa'] ?: $r['nome'])) ?></option>
+                      <?php endforeach; ?>
+                    </select>
+                    <label style="font-size:11px;margin-top:8px">Limite de transferências</label>
+                    <input type="number" name="max_transferencias" min="0" max="99"
+                           value="<?= (int)($l['max_transferencias'] ?? 3) ?>">
+                    <label style="font-size:11px;margin-top:8px">Anotação interna</label>
+                    <input name="observacao" value="<?= e($l['observacao'] ?? '') ?>"
+                           placeholder="não aparece para o cliente">
+                    <div style="margin-top:10px">
+                      <button class="btn pequeno">Salvar</button>
+                      <button type="button" class="btn sec pequeno" style="margin-left:6px"
+                              onclick="alternar('edt<?= $l['id'] ?>')">Cancelar</button>
+                    </div>
+                  </form>
+                  <p class="subtitulo" style="margin:8px 0 0;font-size:10px">
+                    Software, tipo e módulos não são editáveis: mudariam o que
+                    foi contratado sem rastro. Para isso, revogue e emita outra.
+                  </p>
+                </div>
+              <?php else: ?>
+                <table style="font-size:11px">
+                  <tr><td style="color:var(--texto-2)">Motivo</td>
+                      <td><?= e($ROTULO_MOTIVO[$l['motivo_revogacao']] ?? 'não informado') ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Quando</td>
+                      <td><?= $l['revogada_em']
+                              ? date('d/m/Y', strtotime($l['revogada_em'])) : '—' ?></td></tr>
+                  <tr><td style="color:var(--texto-2)">Por</td>
+                      <td><?= e($l['revogada_por_nome'] ?: '—') ?></td></tr>
+                </table>
+                <?php if (!empty($l['obs_revogacao'])): ?>
+                  <p style="font-size:11px;font-style:italic;margin-top:6px">
+                    "<?= e($l['obs_revogacao']) ?>"</p>
+                <?php endif; ?>
+              <?php endif; ?>
+            </div>
+          </div>
         </td>
       </tr>
     <?php endforeach; endif; ?>
     </tbody>
   </table>
+
+  <?php if ($totalPaginas > 1): ?>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:16px;justify-content:center">
+      <?php if ($pagina > 1): ?>
+        <a class="btn sec pequeno" href="<?= e(linkLic(['pg'=>$pagina-1])) ?>">‹ Anterior</a>
+      <?php endif; ?>
+      <span class="subtitulo" style="margin:0">
+        Página <?= $pagina ?> de <?= $totalPaginas ?></span>
+      <?php if ($pagina < $totalPaginas): ?>
+        <a class="btn sec pequeno" href="<?= e(linkLic(['pg'=>$pagina+1])) ?>">Próxima ›</a>
+      <?php endif; ?>
+    </div>
+  <?php endif; ?>
 </div>
-
-<script>
-// Selects encadeados: filtra os tiers pelo software escolhido.
-const TIERS = <?= json_encode(array_map(fn($t)=>[
-    'id'=>(int)$t['id'],'pid'=>(int)$t['produto_id'],
-    'nome'=>$t['nome'],'nivel'=>(int)$t['nivel']
-], $tiers), JSON_UNESCAPED_UNICODE) ?>;
-
-const selProd = document.getElementById('produto_sel');
-const selTier = document.getElementById('tier_id');
-
-selProd.addEventListener('change', function(){
-  const pid = parseInt(this.value||'0',10);
-  selTier.innerHTML = '';
-  if (!pid) {
-    selTier.disabled = true;
-    selTier.innerHTML = '<option value="">— escolha o software —</option>';
-    return;
-  }
-  const lista = TIERS.filter(t=>t.pid===pid).sort((a,b)=>a.nivel-b.nivel);
-  selTier.disabled = false;
-  selTier.innerHTML = '<option value="">— selecione —</option>' +
-    lista.map(t=>`<option value="${t.id}">${t.nome} (nível ${t.nivel})</option>`).join('');
-});
-</script>
 
 <!-- modal de revogacao: exige motivo antes de confirmar -->
 <div id="modalRevogar" style="display:none;position:fixed;inset:0;
@@ -413,11 +910,10 @@ selProd.addEventListener('change', function(){
       O software do cliente deixará de funcionar na próxima revalidação.
       Chave: <span class="mono" id="mrChave"></span>
     </p>
-    <form method="post">
+    <form method="post" action="<?= e(linkLic()) ?>">
       <input type="hidden" name="acao" value="revogar">
       <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
       <input type="hidden" name="id" id="mrId">
-
       <label>Motivo *</label>
       <select name="motivo_revogacao" id="mrMotivo" required>
         <option value="">— selecione —</option>
@@ -425,43 +921,29 @@ selProd.addEventListener('change', function(){
           <option value="<?= e($k) ?>"><?= e($rot) ?></option>
         <?php endforeach; ?>
       </select>
-
       <label style="margin-top:12px">
-        Observação <span id="mrObrig" style="display:none">*</span>
-      </label>
+        Observação <span id="mrObrig" style="display:none">*</span></label>
       <textarea name="obs_revogacao" id="mrObs" style="min-height:70px"
                 placeholder="Detalhe o que aconteceu (fica no histórico da licença)"></textarea>
-
       <div style="margin-top:14px">
         <button class="btn perigo">Confirmar revogação</button>
         <button type="button" class="btn sec" style="margin-left:8px"
                 onclick="document.getElementById('modalRevogar').style.display='none'">
-          Cancelar
-        </button>
+          Cancelar</button>
       </div>
     </form>
   </div>
 </div>
 
 <script>
-function trocarDestino() {
-  const revenda = document.querySelector('input[name=destino]:checked').value === 'revenda';
-  document.getElementById('boxCliente').style.display  = revenda ? 'none' : 'grid';
-  document.getElementById('boxRevenda').style.display  = revenda ? '' : 'none';
-  document.getElementById('selCliente').required    = !revenda;
-  document.getElementById('selRevendedor').required = revenda;
-  // lote so faz sentido para estoque de revenda
-  const qtd = document.getElementById('fQtd');
-  if (!revenda) { qtd.value = 1; qtd.readOnly = true; } else { qtd.readOnly = false; }
-
-  // destaque visual do cartao escolhido
-  document.getElementById('lblCliente').style.borderColor =
-      revenda ? 'var(--borda)' : 'var(--ambar)';
-  document.getElementById('lblRevenda').style.borderColor =
-      revenda ? 'var(--ambar)' : 'var(--borda)';
+function alternar(id) {
+  const el = document.getElementById(id);
+  el.style.display = (el.style.display === 'none') ? '' : 'none';
 }
-document.addEventListener('DOMContentLoaded', trocarDestino);
-
+function detalhe(id) {
+  const el = document.getElementById('det' + id);
+  el.style.display = (el.style.display === 'none') ? '' : 'none';
+}
 function abrirRevogar(id, chave) {
   document.getElementById('mrId').value = id;
   document.getElementById('mrChave').textContent = chave;
@@ -469,15 +951,28 @@ function abrirRevogar(id, chave) {
   document.getElementById('mrObs').value = '';
   document.getElementById('modalRevogar').style.display = 'flex';
 }
-// "Outro" sem explicacao nao serve de nada: exige a observacao
 document.addEventListener('DOMContentLoaded', function () {
   var sel = document.getElementById('mrMotivo');
-  if (!sel) return;
-  sel.addEventListener('change', function () {
+  if (sel) sel.addEventListener('change', function () {
     var outro = this.value === 'outro';
     document.getElementById('mrObs').required = outro;
     document.getElementById('mrObrig').style.display = outro ? '' : 'none';
   });
 });
+
+function trocarDestino() {
+  const revenda = document.querySelector('input[name=destino]:checked').value === 'revenda';
+  document.getElementById('boxCliente').style.display = revenda ? 'none' : 'grid';
+  document.getElementById('boxRevenda').style.display = revenda ? '' : 'none';
+  document.getElementById('selCliente').required    = !revenda;
+  document.getElementById('selRevendedor').required = revenda;
+  const qtd = document.getElementById('fQtd');
+  if (!revenda) { qtd.value = 1; qtd.readOnly = true; } else { qtd.readOnly = false; }
+  document.getElementById('lblCliente').style.borderColor =
+      revenda ? 'var(--borda)' : 'var(--ambar)';
+  document.getElementById('lblRevenda').style.borderColor =
+      revenda ? 'var(--ambar)' : 'var(--borda)';
+}
+document.addEventListener('DOMContentLoaded', trocarDestino);
 </script>
 <?php fecha_pagina();
