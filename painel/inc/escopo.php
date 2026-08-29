@@ -111,11 +111,11 @@ function exige_cliente_do_usuario(int $clienteId): array {
 }
 
 /**
- * Rotulo de situacao da licenca SEM revelar a data de vencimento.
- * O revendedor precisa saber se esta perto de vencer (para orientar o
- * cliente), mas o calendario de renovacoes e informacao sua.
+ * Rotulo curto da situacao da licenca, para o badge colorido.
  *
- * Admin ve a data real; revendedor ve so o estado.
+ * A data de vencimento e mostrada normalmente ao revendedor: o proprio
+ * software avisa o cliente quando esta perto de expirar, entao esconder
+ * do parceiro so atrapalharia o atendimento.
  */
 function situacao_licenca(array $lic): array {
     if ($lic['status'] === 'revogada')  return ['Revogada', 'revogada'];

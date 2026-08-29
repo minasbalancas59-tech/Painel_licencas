@@ -18,7 +18,9 @@ exige_login();
  *  depende de aprovacao do admin (ver trocas.php). A excecao sao as
  *  licencas de demonstracao, que o revendedor movimenta a vontade.
  *
- *  A data de vencimento nao aparece nesta tela - so o estado.
+ *  Mostra tambem a validade: o software ja avisa o cliente quando esta
+ *  perto de vencer, entao o revendedor precisa da mesma informacao para
+ *  conseguir atender.
  * ===================================================================== */
 
 $msg=''; $tipo='';
@@ -86,20 +88,43 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='liberar') {
     }
 }
 
-// --- consultas -------------------------------------------------------
+// --- filtros ---------------------------------------------------------
+$fSit   = trim($_GET['sit'] ?? '');     // livre | vinculada | vencendo | vencidas
+$fBusca = trim($_GET['q'] ?? '');
+
 [$wEsc, $aEsc] = escopo_where('l');
-$whereSql = $wEsc ? "WHERE $wEsc" : '';
+$where = []; $args = [];
+if ($wEsc) { $where[] = $wEsc; $args = array_merge($args, $aEsc); }
+
+switch ($fSit) {
+    case 'livre':      $where[] = 'l.cliente_id IS NULL'; break;
+    case 'vinculada':  $where[] = 'l.cliente_id IS NOT NULL'; break;
+    case 'vencendo':
+        $where[] = "l.status='ativa' AND l.expira_em BETWEEN CURDATE() "
+                 . "AND DATE_ADD(CURDATE(), INTERVAL 30 DAY)"; break;
+    case 'vencidas':
+        $where[] = "l.expira_em < CURDATE()"; break;
+}
+if ($fBusca !== '') {
+    $where[] = '(l.chave LIKE ? OR c.razao_social LIKE ? '
+             . 'OR c.nome_fantasia LIKE ? OR m.maq_nome LIKE ?)';
+    for ($i=0;$i<4;$i++) $args[] = '%'.$fBusca.'%';
+}
+$whereSql = $where ? ('WHERE '.implode(' AND ', $where)) : '';
 
 $licencas = db()->prepare(
-  "SELECT l.*, c.razao_social,
-          p.codigo AS produto_codigo, t.nome AS tier_nome
+  "SELECT l.*, c.razao_social, c.nome_fantasia,
+          p.codigo AS produto_codigo, t.nome AS tier_nome,
+          m.maq_nome, m.ultimo_acesso,
+          DATEDIFF(l.expira_em, CURDATE()) AS dias_restantes
      FROM licencas l
      LEFT JOIN clientes c ON c.id = l.cliente_id
      LEFT JOIN produtos p ON p.id = l.produto_id
      LEFT JOIN tiers    t ON t.id = l.tier_id
+     LEFT JOIN maquinas m ON m.fingerprint = l.fingerprint
    $whereSql
-   ORDER BY l.cliente_id IS NOT NULL, l.id DESC");
-$licencas->execute($aEsc);
+   ORDER BY l.cliente_id IS NOT NULL, l.expira_em");
+$licencas->execute($args);
 $licencas = $licencas->fetchAll();
 
 // clientes do revendedor, para os selects de vinculo
@@ -111,6 +136,10 @@ $stc->execute($aCli);
 $clientes = $stc->fetchAll();
 
 $livres = array_filter($licencas, fn($l) => empty($l['cliente_id']));
+$vencendo = array_filter($licencas,
+    fn($l) => $l['status']==='ativa'
+           && (int)$l['dias_restantes'] >= 0
+           && (int)$l['dias_restantes'] <= 30);
 
 abre_pagina('Minhas licenças', 'minhas');
 ?>
@@ -129,7 +158,34 @@ abre_pagina('Minhas licenças', 'minhas');
       <div style="font-size:26px;font-weight:700;color:var(--verde,#38b26b)"><?= count($livres) ?></div>
       <div class="subtitulo" style="margin:0">Livres para vincular</div>
     </div>
+    <div>
+      <div style="font-size:26px;font-weight:700;color:var(--ambar)"><?= count($vencendo) ?></div>
+      <div class="subtitulo" style="margin:0">Vencem em 30 dias</div>
+    </div>
   </div>
+</div>
+
+<div class="card">
+  <form method="get" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+    <div style="flex:1;min-width:220px">
+      <label>Buscar por chave, cliente ou máquina</label>
+      <input type="text" name="q" value="<?= e($fBusca) ?>">
+    </div>
+    <div>
+      <label>Situação</label>
+      <select name="sit">
+        <option value="">— todas —</option>
+        <option value="livre"     <?= $fSit==='livre'    ?'selected':'' ?>>Livres</option>
+        <option value="vinculada" <?= $fSit==='vinculada'?'selected':'' ?>>Vinculadas</option>
+        <option value="vencendo"  <?= $fSit==='vencendo' ?'selected':'' ?>>Vencendo em 30 dias</option>
+        <option value="vencidas"  <?= $fSit==='vencidas' ?'selected':'' ?>>Vencidas</option>
+      </select>
+    </div>
+    <button class="btn">Filtrar</button>
+    <?php if ($fSit || $fBusca): ?>
+      <a class="btn sec" href="minhas.php">Limpar</a>
+    <?php endif; ?>
+  </form>
 </div>
 
 <?php if ($livres && $clientes): ?>
@@ -180,11 +236,12 @@ abre_pagina('Minhas licenças', 'minhas');
   <table>
     <thead><tr>
       <th>Chave</th><th>Software / Tipo</th><th>Cliente</th>
-      <th>Situação</th><th>Máquina</th><th>Transferências</th><th></th>
+      <th>Situação</th><th>Expira</th><th>Máquina</th>
+      <th>Transferências</th><th></th>
     </tr></thead>
     <tbody>
     <?php if (!$licencas): ?>
-      <tr><td colspan="7" style="color:var(--texto-2)">
+      <tr><td colspan="8" style="color:var(--texto-2)">
         Nenhuma licença atribuída a você ainda.
       </td></tr>
     <?php else: foreach ($licencas as $l):
@@ -203,10 +260,32 @@ abre_pagina('Minhas licenças', 'minhas');
           <?= e(strtoupper($l['produto_codigo'] ?? '—')) ?>
           <?= $l['tier_nome'] ? ' · '.e($l['tier_nome']) : '' ?>
         </td>
-        <td style="font-size:12px"><?= e($l['razao_social'] ?: '— livre —') ?></td>
+        <td style="font-size:12px">
+          <?php if ($l['cliente_id']): ?>
+            <a href="cliente.php?id=<?= (int)$l['cliente_id'] ?>">
+              <?= e($l['nome_fantasia'] ?: $l['razao_social']) ?></a>
+          <?php else: ?>
+            <span style="color:var(--texto-2)">— livre —</span>
+          <?php endif; ?>
+        </td>
         <td><span class="badge <?= e($sitCls) ?>"><?= e($sitTxt) ?></span></td>
         <td class="mono" style="font-size:11px">
-          <?= $l['fingerprint'] ? e(substr($l['fingerprint'],0,14)).'…' : '—' ?>
+          <?= date('d/m/Y', strtotime($l['expira_em'])) ?>
+          <?php $dr = (int)$l['dias_restantes'];
+                $cor = $dr < 0 ? 'var(--vermelho)'
+                     : ($dr <= 30 ? 'var(--ambar)' : 'var(--texto-2)'); ?>
+          <br><span style="font-size:10px;color:<?= $cor ?>">
+            <?= $dr < 0 ? abs($dr).' dias atrás' : 'em '.$dr.' dias' ?>
+          </span>
+        </td>
+        <td class="mono" style="font-size:11px">
+          <?php if ($l['fingerprint']): ?>
+            <?= e($l['maq_nome'] ?: substr($l['fingerprint'],0,14).'…') ?>
+            <?php if ($l['ultimo_acesso']): ?>
+              <br><span style="font-size:10px;color:var(--texto-2)">
+                visto <?= date('d/m/Y', strtotime($l['ultimo_acesso'])) ?></span>
+            <?php endif; ?>
+          <?php else: ?>—<?php endif; ?>
         </td>
         <td class="mono" style="font-size:12px">
           <?php if ($ehDemo): ?>
