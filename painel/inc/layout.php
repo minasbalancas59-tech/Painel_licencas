@@ -32,6 +32,7 @@ function abre_pagina(string $titulo, string $pagina): void {
       <a href="maquinas.php" class="<?= $pagina==='maquinas'  ?'ativo':'' ?>">Máquinas</a>
       <a href="relatorio.php"class="<?= $pagina==='relatorio' ?'ativo':'' ?>">Relatório</a>
       <a href="revendedores.php" class="<?= $pagina==='revendedores'?'ativo':'' ?>">Revendedores</a>
+      <a href="catalogo.php" class="<?= $pagina==='catalogo' ?'ativo':'' ?>">Catálogo</a>
       <a href="offline.php"  class="<?= $pagina==='offline'   ?'ativo':'' ?>">Ativação offline</a>
       <a href="usuarios.php" class="<?= $pagina==='usuarios'  ?'ativo':'' ?>">Usuários</a>
       <a href="configuracoes.php" class="<?= $pagina==='config' ?'ativo':'' ?>">Configurações</a>

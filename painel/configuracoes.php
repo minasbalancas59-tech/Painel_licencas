@@ -45,6 +45,22 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='salvar') {
                         explode(',', $_POST['aviso_marcos'] ?? '')),
                         fn($n) => $n >= 0 && $n <= 365);
             rsort($marcos);
+            foreach ([
+                'validade_padrao_meses' => [1, 240],
+                'carencia_padrao_dias'  => [0, 365],
+                'max_transf_padrao'     => [0, 99],
+                'demo_validade_dias'    => [1, 365],
+                'alerta_vencendo_dias'  => [1, 365],
+                'alerta_sem_uso_dias'   => [1, 999],
+                'revalidacao_dias'      => [1, 365],
+                'tolerancia_offline_dias'=>[0, 365],
+            ] as $ck => $lim) {
+                if (isset($_POST[$ck])) {
+                    $n = max($lim[0], min($lim[1], (int)$_POST[$ck]));
+                    cfg_salvar($ck, (string)$n, false, $u['id']);
+                }
+            }
+
             cfg_salvar('aviso_marcos',
                        implode(',', array_unique($marcos)) ?: '30,15,7,0',
                        false, $u['id']);
@@ -159,6 +175,64 @@ abre_pagina('Configurações', 'config');
                placeholder="igual ao usuário, se vazio"></div>
       <div><label>Remetente (nome exibido)</label>
         <input name="smtp_de_nome" value="<?= cv($conf,'smtp_de_nome','Painel de Licenças') ?>"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Padrões de emissão</h3>
+    <p class="subtitulo" style="margin-top:-6px">
+      Valores que já vêm preenchidos ao emitir uma licença nova. Podem ser
+      alterados caso a caso na hora da emissão.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:16px">
+      <div><label>Validade padrão (meses)</label>
+        <input name="validade_padrao_meses" type="number" min="1" max="240"
+               value="<?= cv($conf,'validade_padrao_meses','12') ?>"></div>
+      <div><label>Carência padrão (dias)</label>
+        <input name="carencia_padrao_dias" type="number" min="0" max="365"
+               value="<?= cv($conf,'carencia_padrao_dias','15') ?>">
+        <span class="subtitulo" style="margin:4px 0 0;display:block;font-size:11px">
+          quanto o software ainda roda após vencer</span></div>
+      <div><label>Transferências permitidas</label>
+        <input name="max_transf_padrao" type="number" min="0" max="99"
+               value="<?= cv($conf,'max_transf_padrao','3') ?>">
+        <span class="subtitulo" style="margin:4px 0 0;display:block;font-size:11px">
+          trocas de PC antes de exigir nova licença</span></div>
+      <div><label>Validade da demonstração (dias)</label>
+        <input name="demo_validade_dias" type="number" min="1" max="365"
+               value="<?= cv($conf,'demo_validade_dias','30') ?>"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Comportamento do software no cliente</h3>
+    <p class="subtitulo" style="margin-top:-6px">
+      Estes valores estão hoje compilados no Delphi
+      (<span class="mono">uRevalidacao.pas</span>). O painel os registra
+      para referência; alterar aqui só passa a valer quando o software for
+      recompilado lendo essas configurações.
+    </p>
+    <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:16px">
+      <div><label>Revalidar a cada (dias)</label>
+        <input name="revalidacao_dias" type="number" min="1" max="365"
+               value="<?= cv($conf,'revalidacao_dias','7') ?>"></div>
+      <div><label>Tolerância sem internet (dias)</label>
+        <input name="tolerancia_offline_dias" type="number" min="0" max="365"
+               value="<?= cv($conf,'tolerancia_offline_dias','7') ?>"></div>
+      <div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Alertas do painel</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:16px">
+      <div><label>Marcar "vencendo" a partir de (dias)</label>
+        <input name="alerta_vencendo_dias" type="number" min="1" max="365"
+               value="<?= cv($conf,'alerta_vencendo_dias','30') ?>"></div>
+      <div><label>Alertar cliente sem uso após (dias)</label>
+        <input name="alerta_sem_uso_dias" type="number" min="1" max="999"
+               value="<?= cv($conf,'alerta_sem_uso_dias','30') ?>"></div>
+      <div></div>
     </div>
   </div>
 

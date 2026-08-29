@@ -2,6 +2,7 @@
 require 'inc/auth.php';
 require 'inc/layout.php';
 require 'inc/escopo.php';
+require_once __DIR__ . '/../api/lib/config_db.php';
 exige_login();
 exige_admin_escopo();
 
@@ -47,7 +48,13 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         else                        { $revId = null; }
         $tipoLic  = ($_POST['tipo_licenca'] ?? 'venda') === 'demo' ? 'demo' : 'venda';
         $qtd      = max(1, min(50, (int)($_POST['quantidade'] ?? 1)));
-        $modsCsv  = implode(',', array_map(fn($m)=>preg_replace('/[^A-Z]/','',$m), $mods));
+        // so aceita codigos que existem e estao ativos no catalogo
+        $validos = db()->query(
+          'SELECT codigo FROM modulos WHERE ativo=1')->fetchAll(PDO::FETCH_COLUMN);
+        $mods = array_intersect(
+            array_map(fn($m)=>strtoupper(preg_replace('/[^A-Za-z0-9]/','',$m)), $mods),
+            $validos);
+        $modsCsv = implode(',', $mods);
 
         if ($tierId<=0) {
             $msg='Selecione o software e o tipo de licença.'; $tipo='erro';
@@ -244,8 +251,20 @@ $clientes = db()->query(
 $preselect = (int)($_GET['cliente'] ?? 0);
 if ($preselect) $abrirEmissao = true;
 
+// padroes de emissao, editaveis em Configuracoes
+$padMeses    = (int)cfg('validade_padrao_meses', 12);
+$padCarencia = (int)cfg('carencia_padrao_dias', 15);
+$padDemoDias = (int)cfg('demo_validade_dias', 30);
+
 $produtos = db()->query(
   'SELECT id,codigo,nome FROM produtos WHERE ativo=1 ORDER BY codigo')->fetchAll();
+
+// modulos vem do catalogo, nao mais escritos a mao no formulario
+$modulosCat = db()->query(
+  'SELECT m.*, p.codigo AS produto_codigo
+     FROM modulos m LEFT JOIN produtos p ON p.id=m.produto_id
+    WHERE m.ativo=1
+    ORDER BY COALESCE(p.codigo,""), m.ordem, m.codigo')->fetchAll();
 $tiers = db()->query(
   'SELECT id,produto_id,codigo,nome,nivel FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
@@ -472,12 +491,12 @@ abre_pagina('Licenças', 'licencas');
       <div>
         <label>Validade</label>
         <select name="meses">
-          <option value="1">1 mês (teste)</option>
-          <option value="3">3 meses</option>
-          <option value="6">6 meses</option>
-          <option value="12" selected>12 meses</option>
-          <option value="24">24 meses</option>
-          <option value="120">10 anos (perpétua)</option>
+          <?php foreach ([1=>'1 mês (teste)', 3=>'3 meses', 6=>'6 meses',
+                          12=>'12 meses', 24=>'24 meses',
+                          120=>'10 anos (perpétua)'] as $mv => $mr): ?>
+            <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
+              <?= $mr ?></option>
+          <?php endforeach; ?>
         </select>
       </div>
     </div>
@@ -501,10 +520,11 @@ abre_pagina('Licenças', 'licencas');
       <div>
         <label>Carência (dias após expirar)</label>
         <select name="carencia">
-          <option value="0">0 (bloqueia no dia)</option>
-          <option value="7">7 dias</option>
-          <option value="15" selected>15 dias</option>
-          <option value="30">30 dias</option>
+          <?php foreach ([0=>'0 (bloqueia no dia)', 7=>'7 dias',
+                          15=>'15 dias', 30=>'30 dias'] as $cv => $cr): ?>
+            <option value="<?= $cv ?>" <?= $cv===$padCarencia?'selected':'' ?>>
+              <?= $cr ?></option>
+          <?php endforeach; ?>
         </select>
       </div>
     </div>
@@ -539,11 +559,21 @@ abre_pagina('Licenças', 'licencas');
       </div>
     </div>
 
-    <label style="margin-top:14px">Módulos (opcional — compatibilidade)</label>
-    <div style="display:flex;gap:20px;margin-top:6px">
-      <label style="text-transform:none;margin:0"><input type="checkbox" name="modulos[]" value="TBE" style="width:auto"> TBE (pesagem)</label>
-      <label style="text-transform:none;margin:0"><input type="checkbox" name="modulos[]" value="RFID" style="width:auto"> RFID</label>
-      <label style="text-transform:none;margin:0"><input type="checkbox" name="modulos[]" value="LPR" style="width:auto"> LPR (câmera)</label>
+    <label style="margin-top:14px">Módulos</label>
+    <div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap">
+      <?php if (!$modulosCat): ?>
+        <span class="subtitulo" style="margin:0">
+          Nenhum módulo cadastrado. Adicione em
+          <a href="catalogo.php">Catálogo</a>.
+        </span>
+      <?php else: foreach ($modulosCat as $mo): ?>
+        <label style="text-transform:none;margin:0"
+               data-produto="<?= e($mo['produto_codigo'] ?? '') ?>"
+               title="<?= e($mo['descricao'] ?? '') ?>">
+          <input type="checkbox" name="modulos[]" value="<?= e($mo['codigo']) ?>"
+                 style="width:auto"> <?= e($mo['nome']) ?>
+        </label>
+      <?php endforeach; endif; ?>
     </div>
 
     <div style="margin-top:16px">
