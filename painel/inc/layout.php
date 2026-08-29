@@ -46,6 +46,9 @@ function menu_estrutura(string $papel): array {
              'pagina'=>'licencas',         'desc'=>'Emissão, renovação e revogação'],
             ['rotulo'=>'Ativação offline', 'url'=>'offline.php',
              'pagina'=>'offline',          'desc'=>'Para PC sem internet'],
+            ['rotulo'=>'Trocas de cliente','url'=>'trocas.php',
+             'pagina'=>'trocas',           'desc'=>'Pedidos dos revendedores',
+             'contador'=>'trocas_pendentes'],
         ]],
 
         ['rotulo'=>'Monitoramento', 'itens'=>[
@@ -64,6 +67,26 @@ function menu_estrutura(string $papel): array {
              'pagina'=>'config',        'desc'=>'E-mail, avisos e padrões'],
         ]],
     ];
+}
+
+/**
+ * Quantas trocas aguardam decisao. Vira uma bolinha no menu: sem isso,
+ * a fila so e vista por quem lembra de abrir a tela - e o revendedor
+ * fica esperando sem saber se alguem viu.
+ */
+function trocas_pendentes(): int {
+    static $n = null;
+    if ($n !== null) return $n;
+    // so o admin decide trocas; para o revendedor a consulta seria
+    // trabalho a toa em toda pagina
+    $u = usuario_logado();
+    if (($u['papel'] ?? '') !== 'admin') return $n = 0;
+    try {
+        $n = (int)db()->query(
+          "SELECT COUNT(*) FROM trocas_cliente WHERE status='pendente'")
+          ->fetchColumn();
+    } catch (Throwable $e) { $n = 0; }
+    return $n;
 }
 
 function abre_pagina(string $titulo, string $pagina): void {
@@ -116,6 +139,13 @@ function abre_pagina(string $titulo, string $pagina): void {
     .nav .submenu a.ativo { background: var(--bg-3); }
     .nav .submenu a.ativo b { color: var(--ambar); }
 
+    .nav .pino {
+      display: inline-block; font-style: normal; font-size: 10px;
+      font-weight: 700; line-height: 1; padding: 3px 6px; margin-left: 5px;
+      border-radius: 9px; background: var(--ambar); color: #14171a;
+      vertical-align: middle;
+    }
+
     @media (max-width: 720px) {
       .nav { display: flex; flex-wrap: wrap; }
       .nav .submenu { position: static; box-shadow: none; min-width: 0; }
@@ -138,17 +168,28 @@ function abre_pagina(string $titulo, string $pagina): void {
            class="<?= $pagina===$m['pagina'] ? 'ativo' : '' ?>"><?= e($m['rotulo']) ?></a>
       <?php else:
         // o grupo acende quando qualquer tela dentro dele esta aberta
-        $ativo = false;
-        foreach ($m['itens'] as $i) if ($pagina === $i['pagina']) $ativo = true;
+        $ativo = false; $pend = 0;
+        foreach ($m['itens'] as $i) {
+            if ($pagina === $i['pagina']) $ativo = true;
+            if (!empty($i['contador']) && function_exists($i['contador'])) {
+                $pend += (int)call_user_func($i['contador']);
+            }
+        }
       ?>
         <span class="grupo" tabindex="0">
           <a class="rotulo <?= $ativo ? 'ativo' : '' ?>"
-             href="<?= e($m['itens'][0]['url']) ?>"><?= e($m['rotulo']) ?></a>
+             href="<?= e($m['itens'][0]['url']) ?>"><?= e($m['rotulo']) ?>
+            <?php if ($pend): ?><i class="pino"><?= $pend ?></i><?php endif; ?>
+          </a>
           <span class="submenu">
             <?php foreach ($m['itens'] as $i): ?>
+              <?php $c = (!empty($i['contador']) && function_exists($i['contador']))
+                          ? (int)call_user_func($i['contador']) : 0; ?>
               <a href="<?= e($i['url']) ?>"
                  class="<?= $pagina===$i['pagina'] ? 'ativo' : '' ?>">
-                <b><?= e($i['rotulo']) ?></b>
+                <b><?= e($i['rotulo']) ?>
+                  <?php if ($c): ?><i class="pino"><?= $c ?></i><?php endif; ?>
+                </b>
                 <?php if (!empty($i['desc'])): ?>
                   <span><?= e($i['desc']) ?></span>
                 <?php endif; ?>

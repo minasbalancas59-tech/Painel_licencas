@@ -52,6 +52,55 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='vincular') {
     }
 }
 
+// --- solicitar troca de cliente -------------------------------------
+// O revendedor NAO troca sozinho: uma licenca que muda de cliente a
+// vontade vira a mesma licenca vendida duas vezes. Ele pede, o admin
+// decide. Excecao: licenca demo, que existe justamente para circular.
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='solicitar_troca') {
+    if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
+    else {
+        $licId = (int)($_POST['licenca_id'] ?? 0);
+        $novoId= (int)($_POST['cliente_novo'] ?? 0);
+        $motivo= trim($_POST['motivo'] ?? '');
+        $lic = exige_licenca_do_usuario($licId);
+        $cli = exige_cliente_do_usuario($novoId);
+
+        if (empty($lic['cliente_id'])) {
+            $msg='Esta licença ainda não tem cliente. Use "Vincular" acima.';
+            $tipo='erro';
+        } elseif ((int)$lic['cliente_id'] === $novoId) {
+            $msg='A licença já está neste cliente.'; $tipo='erro';
+        } elseif ($motivo === '') {
+            $msg='Descreva o motivo da troca.'; $tipo='erro';
+        } else {
+            $jaTem = db()->prepare(
+              'SELECT 1 FROM trocas_cliente
+                WHERE licenca_id=? AND status="pendente" LIMIT 1');
+            $jaTem->execute([$licId]);
+            if ($jaTem->fetchColumn()) {
+                $msg='Já existe uma solicitação pendente para esta licença.';
+                $tipo='erro';
+            } else {
+                db()->prepare(
+                  'INSERT INTO trocas_cliente
+                     (licenca_id,revendedor_id,cliente_atual,cliente_novo,motivo)
+                   VALUES (?,?,?,?,?)')
+                  ->execute([$licId, $rev, $lic['cliente_id'], $novoId, $motivo]);
+
+                $u = usuario_logado();
+                log_acao_painel($licId, $lic['chave'], null,
+                    'solicitar_troca', 'ok', $u['id'], $u['nome'] ?? null,
+                    $lic['produto_codigo'], $lic['tier_codigo'],
+                    'para cliente: '.$cli['razao_social'].' - '.$motivo);
+
+                $msg='Solicitação enviada. Você será avisado quando for '
+                   . 'analisada pelo administrador.';
+                $tipo='ok';
+            }
+        }
+    }
+}
+
 // --- liberar maquina (PC queimou / trocou de equipamento) -----------
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='liberar') {
     if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
@@ -135,6 +184,25 @@ $stc = db()->prepare(
 $stc->execute($aCli);
 $clientes = $stc->fetchAll();
 
+// solicitacoes em aberto, para marcar as linhas correspondentes
+$pendTroca = [];
+$stPT = db()->prepare(
+  'SELECT licenca_id, criado_em FROM trocas_cliente
+    WHERE revendedor_id=? AND status="pendente"');
+$stPT->execute([$rev]);
+foreach ($stPT->fetchAll() as $r) $pendTroca[(int)$r['licenca_id']] = $r['criado_em'];
+
+// ultimas decisoes, para o revendedor saber o que foi resolvido
+$stDec = db()->prepare(
+  "SELECT t.*, c.razao_social AS novo_nome, l.chave
+     FROM trocas_cliente t
+     LEFT JOIN clientes c ON c.id=t.cliente_novo
+     LEFT JOIN licencas l ON l.id=t.licenca_id
+    WHERE t.revendedor_id=? AND t.status<>'pendente'
+    ORDER BY t.decidido_em DESC LIMIT 5");
+$stDec->execute([$rev]);
+$decisoes = $stDec->fetchAll();
+
 $livres = array_filter($licencas, fn($l) => empty($l['cliente_id']));
 $vencendo = array_filter($licencas,
     fn($l) => $l['status']==='ativa'
@@ -147,6 +215,23 @@ abre_pagina('Minhas licenças', 'minhas');
 <p class="subtitulo">Vincule ao cliente e libere a máquina quando ele trocar de PC</p>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
+
+<?php foreach ($decisoes as $d):
+    $ok = $d['status']==='aprovada'; ?>
+  <div class="card" style="padding:10px 16px;margin-bottom:10px;
+       border-left:3px solid var(--<?= $ok ? 'verde' : 'vermelho' ?>)">
+    <span style="font-size:13px">
+      Troca da licença <span class="mono"><?= e($d['chave']) ?></span> para
+      <b><?= e($d['novo_nome']) ?></b>
+      foi <b><?= $ok ? 'aprovada' : 'negada' ?></b>
+      em <?= $d['decidido_em'] ? date('d/m/Y', strtotime($d['decidido_em'])) : '—' ?>.
+      <?php if ($d['observacao_admin']): ?>
+        <br><span style="color:var(--texto-2);font-style:italic">
+          "<?= e($d['observacao_admin']) ?>"</span>
+      <?php endif; ?>
+    </span>
+  </div>
+<?php endforeach; ?>
 
 <div class="card">
   <div style="display:flex;gap:34px;flex-wrap:wrap">
@@ -294,7 +379,14 @@ abre_pagina('Minhas licenças', 'minhas');
             <?= $restam ?> de <?= (int)$l['max_transferencias'] ?>
           <?php endif; ?>
         </td>
-        <td>
+        <td style="white-space:nowrap">
+          <?php if (isset($pendTroca[(int)$l['id']])): ?>
+            <span class="badge nova" style="font-size:10px">troca solicitada</span>
+          <?php elseif ($l['cliente_id'] && !$ehDemo): ?>
+            <button type="button" class="btn sec pequeno"
+                    onclick="pedirTroca(<?= $l['id'] ?>, '<?= e($l['chave']) ?>')">
+              Trocar cliente</button>
+          <?php endif; ?>
           <?php if ($l['fingerprint'] && ($ehDemo || $restam > 0)): ?>
             <form method="post" onsubmit="return confirm('Liberar a máquina desta licença? O cliente precisará ativar novamente no PC novo.')">
               <input type="hidden" name="acao" value="liberar">
@@ -313,4 +405,48 @@ abre_pagina('Minhas licenças', 'minhas');
     </tbody>
   </table>
 </div>
+
+<!-- solicitacao de troca de cliente -->
+<div id="modalTroca" style="display:none;position:fixed;inset:0;
+     background:rgba(0,0,0,.6);z-index:50;align-items:center;justify-content:center">
+  <div class="card" style="max-width:520px;width:92%;margin:0">
+    <h3 style="margin-top:0">Solicitar troca de cliente</h3>
+    <p class="subtitulo" style="margin-top:-6px">
+      A troca depende de aprovação do administrador. Licença:
+      <span class="mono" id="mtChave"></span>
+    </p>
+    <form method="post">
+      <input type="hidden" name="acao" value="solicitar_troca">
+      <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+      <input type="hidden" name="licenca_id" id="mtId">
+
+      <label>Novo cliente *</label>
+      <select name="cliente_novo" required>
+        <option value="">— selecione —</option>
+        <?php foreach ($clientes as $c): ?>
+          <option value="<?= $c['id'] ?>"><?= e($c['razao_social']) ?></option>
+        <?php endforeach; ?>
+      </select>
+
+      <label style="margin-top:12px">Motivo *</label>
+      <textarea name="motivo" required style="min-height:80px"
+                placeholder="Ex: cliente devolveu o equipamento; cadastro feito no cliente errado; empresa mudou de CNPJ"></textarea>
+
+      <div style="margin-top:14px">
+        <button class="btn">Enviar solicitação</button>
+        <button type="button" class="btn sec" style="margin-left:8px"
+                onclick="document.getElementById('modalTroca').style.display='none'">
+          Cancelar</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function pedirTroca(id, chave) {
+  document.getElementById('mtId').value = id;
+  document.getElementById('mtChave').textContent = chave;
+  document.getElementById('modalTroca').style.display = 'flex';
+}
+</script>
 <?php fecha_pagina();
