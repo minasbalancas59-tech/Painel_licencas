@@ -504,10 +504,12 @@ abre_pagina('Licenças', 'licencas');
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:14px">
       <div>
         <label>Software *</label>
-        <select name="produto_sel" id="produto_sel" required>
+        <select name="produto_sel" id="produto_sel" required
+                onchange="filtrarPorProduto()">
           <option value="">— selecione —</option>
           <?php foreach ($produtos as $p): ?>
-            <option value="<?= $p['id'] ?>"><?= e($p['nome']) ?></option>
+            <option value="<?= $p['id'] ?>" data-codigo="<?= e($p['codigo']) ?>">
+              <?= e($p['nome']) ?></option>
           <?php endforeach; ?>
         </select>
       </div>
@@ -515,6 +517,11 @@ abre_pagina('Licenças', 'licencas');
         <label>Tipo de licença *</label>
         <select name="tier_id" id="tier_id" required disabled>
           <option value="">— escolha o software —</option>
+          <?php foreach ($tiers as $t): ?>
+            <option value="<?= $t['id'] ?>" data-produto="<?= $t['produto_id'] ?>">
+              nível <?= (int)$t['nivel'] ?> · <?= e($t['nome']) ?>
+            </option>
+          <?php endforeach; ?>
         </select>
       </div>
       <div>
@@ -966,6 +973,57 @@ abre_pagina('Licenças', 'licencas');
 </div>
 
 <script>
+function filtrarPorProduto() {
+  var prod = document.getElementById('produto_sel');
+  var tier = document.getElementById('tier_id');
+  if (!prod || !tier) return;
+  var pid = prod.value;
+
+  // Guarda a lista completa na primeira passada e reconstroi o select
+  // a cada troca. O atributo 'hidden' em <option> nao e respeitado por
+  // todos os navegadores, entao remover e recriar e o caminho seguro.
+  if (!window._tiers) {
+    window._tiers = [];
+    for (var i = 0; i < tier.options.length; i++) {
+      var o = tier.options[i];
+      if (o.value) window._tiers.push({
+        v: o.value, t: o.text.replace(/\s+/g, ' ').trim(),
+        p: o.getAttribute('data-produto')
+      });
+    }
+  }
+
+  var anterior = tier.value;
+  while (tier.options.length > 1) tier.remove(1);
+
+  var achou = 0;
+  for (var k = 0; k < window._tiers.length; k++) {
+    var it = window._tiers[k];
+    if (it.p !== pid) continue;
+    var op = document.createElement('option');
+    op.value = it.v;
+    op.text = it.t;
+    if (it.v === anterior) op.selected = true;
+    tier.appendChild(op);
+    achou++;
+  }
+
+  tier.disabled = !pid;
+  tier.options[0].text = !pid ? '\u2014 escolha o software \u2014'
+                     : (achou ? '\u2014 selecione \u2014'
+                              : '\u2014 nenhum tipo cadastrado \u2014');
+
+  // modulos marcados com um software so aparecem nele
+  var cod = prod.options[prod.selectedIndex]
+            ? prod.options[prod.selectedIndex].getAttribute('data-codigo') : '';
+  var mods = document.querySelectorAll('label[data-produto]');
+  for (var j = 0; j < mods.length; j++) {
+    var dp = mods[j].getAttribute('data-produto');
+    mods[j].style.display = (!dp || dp === cod) ? '' : 'none';
+  }
+}
+document.addEventListener('DOMContentLoaded', filtrarPorProduto);
+
 function alternar(id) {
   const el = document.getElementById(id);
   el.style.display = (el.style.display === 'none') ? '' : 'none';
