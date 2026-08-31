@@ -538,6 +538,41 @@ if ($licencas) {
         $histLic[(int)$h['licenca_id']][] = $h;
 }
 
+/* ---------------------------------------------------------------------
+ *  VOLUME DE PESAGENS POR LICENCA
+ * ---------------------------------------------------------------------
+ *  A `pesagens_mensal` guarda por licenca e por maquina, entao da para
+ *  ver qual balanca do cliente realmente trabalha. Um cliente com tres
+ *  licencas onde so uma pesa e uma conversa diferente de um com as tres
+ *  rodando.
+ *
+ *  Desenhado com barras em CSS, nao com Chart.js: sao ate 40 dossies
+ *  por pagina, e um grafico em cada um deixaria a tela pesada para
+ *  mostrar seis numeros.
+ * ------------------------------------------------------------------- */
+$pesagLic = [];
+if ($licencas) {
+    $ids = array_column($licencas, 'id');
+    $inQ = implode(',', array_fill(0, count($ids), '?'));
+    $stP = db()->prepare(
+      "SELECT licenca_id, ano_mes, SUM(pesagens) AS n
+         FROM pesagens_mensal
+        WHERE licenca_id IN ($inQ)
+          AND ano_mes >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 5 MONTH), '%Y-%m')
+        GROUP BY licenca_id, ano_mes
+        ORDER BY ano_mes");
+    $stP->execute($ids);
+    foreach ($stP->fetchAll() as $r)
+        $pesagLic[(int)$r['licenca_id']][$r['ano_mes']] = (int)$r['n'];
+}
+
+function mesCurto(string $am): string {
+    $m = ['01'=>'jan','02'=>'fev','03'=>'mar','04'=>'abr','05'=>'mai','06'=>'jun',
+          '07'=>'jul','08'=>'ago','09'=>'set','10'=>'out','11'=>'nov','12'=>'dez'];
+    [$a, $mm] = explode('-', $am);
+    return ($m[$mm] ?? $mm) . '/' . substr($a, 2);
+}
+
 // rotulos das acoes registradas no log
 $ROTULO_ACAO = [
     'emitir'              => 'Licença emitida',
@@ -1034,6 +1069,43 @@ abre_pagina('Licenças', 'licencas');
                 </table>
                 <a class="btn sec pequeno" style="margin-top:8px"
                    href="maquina.php?fp=<?= urlencode($l['fingerprint']) ?>">Ver uso</a>
+              <?php endif; ?>
+
+              <?php $pz = $pesagLic[(int)$l['id']] ?? []; ?>
+              <?php if ($pz):
+                  $maxP = max($pz) ?: 1;
+                  $medP = round(array_sum($pz) / count($pz));
+              ?>
+                <div style="margin-top:14px;border-top:1px solid var(--borda);
+                     padding-top:10px">
+                  <div style="font-size:11px;color:var(--texto-2);margin-bottom:6px">
+                    PESAGENS ·
+                    <b style="color:var(--texto)"><?= number_format($medP,0,',','.') ?></b>
+                    por mês em média
+                  </div>
+                  <?php foreach ($pz as $am => $n):
+                      // barra proporcional ao maior mes do periodo
+                      $larg = max(2, round(($n / $maxP) * 100));
+                  ?>
+                    <div style="display:flex;align-items:center;gap:6px;
+                         font-size:10px;margin-bottom:3px">
+                      <span class="mono" style="width:38px;color:var(--texto-2)">
+                        <?= e(mesCurto($am)) ?></span>
+                      <span style="flex:1;background:var(--bg-3);height:12px;
+                            border-radius:2px;overflow:hidden">
+                        <span style="display:block;height:12px;width:<?= $larg ?>%;
+                              background:var(--ambar)"></span>
+                      </span>
+                      <span class="mono" style="width:44px;text-align:right">
+                        <?= number_format($n,0,',','.') ?></span>
+                    </div>
+                  <?php endforeach; ?>
+                </div>
+              <?php elseif ($l['fingerprint']): ?>
+                <p style="font-size:10px;color:var(--texto-2);margin-top:12px">
+                  Sem dados de pesagem. O software desta máquina ainda não
+                  reporta o volume.
+                </p>
               <?php endif; ?>
             </div>
 
