@@ -56,6 +56,8 @@ function menu_estrutura(string $papel): array {
              'pagina'=>'maquinas',  'desc'=>'Onde o software está rodando'],
             ['rotulo'=>'Relatório', 'url'=>'relatorio.php',
              'pagina'=>'relatorio', 'desc'=>'Auditoria de ações'],
+            ['rotulo'=>'Volume de pesagens', 'url'=>'pesagens.php',
+             'pagina'=>'pesagens',  'desc'=>'Quanto cada cliente usa'],
         ]],
 
         ['rotulo'=>'Sistema', 'itens'=>[

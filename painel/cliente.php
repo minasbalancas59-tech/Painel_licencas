@@ -426,6 +426,24 @@ $ROTULO_MOTIVO = [
     'outro'         => 'Outro',
 ];
 
+/* Volume de pesagens do cliente - 12 meses.
+   Fica na ficha porque e onde se olha antes de negociar a renovacao. */
+$pesag = db()->prepare(
+  "SELECT ano_mes, SUM(pesagens) AS n
+     FROM pesagens_mensal
+    WHERE cliente_id = ?
+      AND ano_mes >= DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 11 MONTH), '%Y-%m')
+    GROUP BY ano_mes ORDER BY ano_mes");
+$pesag->execute([$id]);
+$pesag = $pesag->fetchAll();
+
+function fmtMesCli(string $am): string {
+    $m = ['01'=>'jan','02'=>'fev','03'=>'mar','04'=>'abr','05'=>'mai','06'=>'jun',
+          '07'=>'jul','08'=>'ago','09'=>'set','10'=>'out','11'=>'nov','12'=>'dez'];
+    [$a, $mm] = explode('-', $am);
+    return ($m[$mm] ?? $mm) . '/' . substr($a, 2);
+}
+
 abre_pagina('Cliente', 'clientes');
 ?>
 <p class="subtitulo" style="margin-bottom:4px"><a href="clientes.php">‹ Clientes</a></p>
@@ -886,6 +904,24 @@ abre_pagina('Cliente', 'clientes');
   <?php endif; ?>
 </div>
 
+<?php if ($pesag):
+    $totPesag = array_sum(array_map('intval', array_column($pesag,'n')));
+    $mediaPesag = $totPesag > 0 ? round($totPesag / count($pesag)) : 0;
+?>
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <h3 style="margin:0">Volume de pesagens</h3>
+    <span class="subtitulo" style="margin:0">
+      média de <?= number_format($mediaPesag,0,',','.') ?> por mês
+    </span>
+  </div>
+  <p class="subtitulo" style="margin-top:4px">
+    É o argumento da renovação: mostra o quanto o cliente realmente usa.
+  </p>
+  <canvas id="gPesag" height="80"></canvas>
+</div>
+<?php endif; ?>
+
 <div class="card">
   <h3>Uso do software</h3>
   <div style="display:flex;gap:8px;margin-bottom:16px">
@@ -1090,5 +1126,25 @@ function buscarCnpj() {
     });
 }
 </script>
+<?php if ($pesag): ?>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+Chart.defaults.color = '#93a1ac';
+new Chart(document.getElementById('gPesag'), {
+  type: 'bar',
+  data: {
+    labels: <?= json_encode(array_map('fmtMesCli', array_column($pesag,'ano_mes'))) ?>,
+    datasets: [{ label: 'Pesagens',
+      data: <?= json_encode(array_map('intval', array_column($pesag,'n'))) ?>,
+      backgroundColor: '#f0a92b' }]
+  },
+  options: {
+    plugins: { legend: { display: false } },
+    scales: { y: { beginAtZero: true, grid: { color: '#313a42' } },
+              x: { grid: { display: false } } }
+  }
+});
+</script>
+<?php endif; ?>
 <?= script_copiar_licenca() ?>
 <?php fecha_pagina();
