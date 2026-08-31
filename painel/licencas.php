@@ -258,16 +258,56 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='editar') {
         $maxT    = max(0, min(99, (int)($_POST['max_transferencias'] ?? 3)));
         $obs     = trim($_POST['observacao'] ?? '');
 
+        // Le o estado ANTES de alterar, para registrar o que de fato
+        // mudou. "Cadastro alterado" sem dizer o que mudou nao serve
+        // para nada quando alguem for auditar dali a seis meses.
+        $ant = db()->prepare(
+          'SELECT l.chave, l.cliente_id, l.revendedor_id,
+                  l.max_transferencias, l.observacao,
+                  c.razao_social, u.nome AS rev_nome
+             FROM licencas l
+             LEFT JOIN clientes c ON c.id = l.cliente_id
+             LEFT JOIN usuarios u ON u.id = l.revendedor_id
+            WHERE l.id = ?');
+        $ant->execute([$id]);
+        $ant = $ant->fetch() ?: [];
+
         db()->prepare(
           'UPDATE licencas
               SET cliente_id=?, revendedor_id=?, max_transferencias=?, observacao=?
             WHERE id=?')->execute([$novoCli, $novoRev, $maxT, ($obs ?: null), $id]);
 
-        $lr = db()->prepare('SELECT chave FROM licencas WHERE id=?');
-        $lr->execute([$id]);
-        log_acao_painel($id, $lr->fetchColumn(), null, 'editar', 'ok',
+        $mudou = [];
+        if ((int)($ant['cliente_id'] ?? 0) !== (int)$novoCli) {
+            $de = $ant['razao_social'] ?? 'sem cliente';
+            $paraNome = 'sem cliente';
+            if ($novoCli) {
+                $q = db()->prepare('SELECT razao_social FROM clientes WHERE id=?');
+                $q->execute([$novoCli]);
+                $paraNome = $q->fetchColumn() ?: ('id ' . $novoCli);
+            }
+            $mudou[] = "cliente: $de -> $paraNome";
+        }
+        if ((int)($ant['revendedor_id'] ?? 0) !== (int)$novoRev) {
+            $de = $ant['rev_nome'] ?? 'venda direta';
+            $paraNome = 'venda direta';
+            if ($novoRev) {
+                $q = db()->prepare('SELECT nome FROM usuarios WHERE id=?');
+                $q->execute([$novoRev]);
+                $paraNome = $q->fetchColumn() ?: ('id ' . $novoRev);
+            }
+            $mudou[] = "revendedor: $de -> $paraNome";
+        }
+        if ((int)($ant['max_transferencias'] ?? 3) !== $maxT)
+            $mudou[] = 'limite de transferencias: '
+                     . (int)($ant['max_transferencias'] ?? 3) . " -> $maxT";
+        if (trim((string)($ant['observacao'] ?? '')) !== $obs)
+            $mudou[] = 'anotacao alterada';
+
+        log_acao_painel($id, $ant['chave'] ?? null, null, 'editar', 'ok',
             $u['id'], $u['nome'] ?? null, null, null,
-            'vinculo/limite/anotacao alterados no painel');
+            $mudou ? mb_substr(implode('; ', $mudou), 0, 255)
+                   : 'salvo sem alteracao');
         pos_acao('Licença atualizada.', 'ok');
     }
 }
@@ -475,6 +515,45 @@ $stL = db()->prepare(
    LIMIT $porPagina OFFSET $offset");
 $stL->execute($args);
 $licencas = $stL->fetchAll();
+
+/* ---------------------------------------------------------------------
+ *  HISTORICO POR LICENCA
+ * ---------------------------------------------------------------------
+ *  Carregado de uma vez para as licencas da pagina, em vez de uma
+ *  consulta por linha. Com 40 licencas por pagina, seriam 40 idas ao
+ *  banco so para preencher blocos que talvez ninguem abra.
+ * ------------------------------------------------------------------- */
+$histLic = [];
+if ($licencas) {
+    $ids = array_column($licencas, 'id');
+    $inQ = implode(',', array_fill(0, count($ids), '?'));
+    $stH = db()->prepare(
+      "SELECT a.licenca_id, a.acao, a.resultado, a.detalhe,
+              a.usuario_nome, a.fingerprint, a.criado_em
+         FROM ativacoes_log a
+        WHERE a.licenca_id IN ($inQ)
+        ORDER BY a.id DESC");
+    $stH->execute($ids);
+    foreach ($stH->fetchAll() as $h)
+        $histLic[(int)$h['licenca_id']][] = $h;
+}
+
+// rotulos das acoes registradas no log
+$ROTULO_ACAO = [
+    'emitir'              => 'Licença emitida',
+    'ativar'              => 'Ativada na máquina',
+    'revalidar'           => 'Revalidação',
+    'renovar'             => 'Renovada',
+    'editar'              => 'Cadastro alterado',
+    'revogar'             => 'Revogada',
+    'vincular_cliente'    => 'Vinculada ao cliente',
+    'liberar_maquina'     => 'Máquina liberada',
+    'atribuir_revendedor' => 'Atribuída a revendedor',
+    'solicitar_troca'     => 'Troca solicitada',
+    'aprovar_troca'       => 'Troca aprovada',
+    'negar_troca'         => 'Troca negada',
+    'offline'             => 'Ativação offline gerada',
+];
 
 // --- indicadores do filtro atual -------------------------------------
 $stR = db()->prepare(
@@ -1056,6 +1135,57 @@ abre_pagina('Licenças', 'licencas');
                 <?php endif; ?>
               <?php endif; ?>
             </div>
+          </div>
+
+          <?php $hh = $histLic[(int)$l['id']] ?? []; ?>
+          <div style="margin-top:16px;border-top:1px solid var(--borda);
+               padding-top:12px">
+            <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">
+              HISTÓRICO
+              <span style="color:var(--texto-2);font-weight:normal">
+                (<?= count($hh) ?> registro<?= count($hh)==1?'':'s' ?>)</span>
+            </h4>
+
+            <?php if (!$hh): ?>
+              <p style="font-size:11px;color:var(--texto-2);margin:0">
+                Nenhum evento registrado para esta licença.
+              </p>
+            <?php else: ?>
+              <table style="font-size:11px">
+                <thead><tr>
+                  <th style="width:110px">Quando</th>
+                  <th style="width:150px">Evento</th>
+                  <th style="width:120px">Quem</th>
+                  <th>Detalhe</th>
+                </tr></thead>
+                <tbody>
+                <?php foreach ($hh as $h):
+                    $cor = $h['resultado']==='ok' ? 'var(--texto-2)'
+                         : ($h['resultado']==='negado' ? 'var(--vermelho)'
+                                                       : 'var(--ambar)');
+                ?>
+                  <tr>
+                    <td class="mono" style="color:var(--texto-2)">
+                      <?= date('d/m/Y H:i', strtotime($h['criado_em'])) ?></td>
+                    <td style="color:<?= $cor ?>">
+                      <?= e($ROTULO_ACAO[$h['acao']] ?? $h['acao']) ?>
+                      <?php if ($h['resultado'] !== 'ok'): ?>
+                        · <?= e($h['resultado']) ?>
+                      <?php endif; ?>
+                    </td>
+                    <td><?= e($h['usuario_nome'] ?: 'sistema') ?></td>
+                    <td style="color:var(--texto-2)">
+                      <?= e($h['detalhe'] ?: '') ?>
+                      <?php if (!empty($h['fingerprint'])): ?>
+                        <span class="mono" style="font-size:10px">
+                          <?= e(substr($h['fingerprint'], 0, 14)) ?>…</span>
+                      <?php endif; ?>
+                    </td>
+                  </tr>
+                <?php endforeach; ?>
+                </tbody>
+              </table>
+            <?php endif; ?>
           </div>
         </td>
       </tr>
