@@ -36,6 +36,21 @@ if ($rev !== null && (int)$cli['revendedor_id'] !== $rev) {
 
 // ---- contatos: adicionar / remover / marcar principal ---------------
 $msgC=''; $tipoC='';
+
+/* Sem POST/Redirect/GET, um F5 depois de adicionar um contato
+   duplicaria o contato. Mesmo problema que havia na emissao. */
+if (!empty($_SESSION['flashC'])) {
+    $msgC  = $_SESSION['flashC']['msg']  ?? '';
+    $tipoC = $_SESSION['flashC']['tipo'] ?? '';
+    unset($_SESSION['flashC']);
+}
+
+function pos_acao_cli(string $msg, string $tipo): void {
+    $_SESSION['flashC'] = ['msg' => $msg, 'tipo' => $tipo];
+    header('Location: ' . $_SERVER['REQUEST_URI']);
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
     $ac = $_POST['acao'] ?? '';
 
@@ -52,14 +67,14 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
                          (trim($_POST['c_telefone'] ?? '') ?: null),
                          (trim($_POST['c_email'] ?? '') ?: null),
                          (trim($_POST['c_obs'] ?? '') ?: null)]);
-            $msgC='Contato adicionado.'; $tipoC='ok';
+            pos_acao_cli('Contato adicionado.', 'ok');
         }
     }
     elseif ($ac === 'contato_remove') {
         // o cliente_id no WHERE impede remover contato de outro cliente
         db()->prepare('DELETE FROM cliente_contatos WHERE id=? AND cliente_id=?')
             ->execute([(int)$_POST['c_id'], $id]);
-        $msgC='Contato removido.'; $tipoC='ok';
+        pos_acao_cli('Contato removido.', 'ok');
     }
     elseif ($ac === 'cliente_editar') {
         $razao = trim($_POST['razao_social'] ?? '');
@@ -80,7 +95,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             // recarrega para o cabecalho refletir a mudanca na hora
             $stc->execute([$id]);
             $cli = $stc->fetch();
-            $msgC='Cadastro atualizado.'; $tipoC='ok';
+            pos_acao_cli('Cadastro atualizado.', 'ok');
         }
     }
     elseif ($ac === 'contato_editar') {
@@ -98,7 +113,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
                          (trim($_POST['c_email'] ?? '') ?: null),
                          (trim($_POST['c_obs'] ?? '') ?: null),
                          (int)$_POST['c_id'], $id]);
-            $msgC='Contato atualizado.'; $tipoC='ok';
+            pos_acao_cli('Contato atualizado.', 'ok');
         }
     }
     elseif ($ac === 'contato_principal') {
@@ -106,7 +121,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             ->execute([$id]);
         db()->prepare('UPDATE cliente_contatos SET principal=1 WHERE id=? AND cliente_id=?')
             ->execute([(int)$_POST['c_id'], $id]);
-        $msgC='Contato principal atualizado.'; $tipoC='ok';
+        pos_acao_cli('Contato principal atualizado.', 'ok');
     }
 }
 

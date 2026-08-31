@@ -29,6 +29,30 @@ exige_admin_escopo();
 
 $msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false;
 
+/* ---------------------------------------------------------------------
+ *  POST / Redirect / GET
+ * ---------------------------------------------------------------------
+ *  Sem isto, apertar F5 depois de emitir REENVIA o formulario e emite
+ *  outra licenca - cada atualizacao da pagina queimava uma chave.
+ *
+ *  Toda acao que grava termina em redirecionamento. A mensagem (e a
+ *  chave gerada) viaja na sessao, para sobreviver ao redirect sem
+ *  aparecer na URL.
+ * ------------------------------------------------------------------- */
+function pos_acao(string $msg, string $tipo, string $chave = ''): void {
+    $_SESSION['flash'] = ['msg' => $msg, 'tipo' => $tipo, 'chave' => $chave];
+    header('Location: ' . $_SERVER['REQUEST_URI']);
+    exit;
+}
+
+// recupera a mensagem deixada pela acao anterior
+if (!empty($_SESSION['flash'])) {
+    $msg         = $_SESSION['flash']['msg']   ?? '';
+    $tipo        = $_SESSION['flash']['tipo']  ?? '';
+    $chaveGerada = $_SESSION['flash']['chave'] ?? '';
+    unset($_SESSION['flash']);
+}
+
 // --- emitir nova licenca (v2: produto + tier) ----------------------
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
     if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
@@ -113,11 +137,11 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                         . ($revId ? ", revendedor {$revId}" : ''));
                 }
 
-                $chaveGerada = implode("\n", $geradas);
-                $msg = count($geradas) . " licença(s) emitida(s) "
-                     . "({$t['produto_codigo']} · {$t['tier_codigo']}"
-                     . ($tipoLic === 'demo' ? ' · demonstração' : '') . ").";
-                $tipo='ok';
+                pos_acao(
+                    count($geradas) . " licença(s) emitida(s) "
+                    . "({$t['produto_codigo']} · {$t['tier_codigo']}"
+                    . ($tipoLic === 'demo' ? ' · demonstração' : '') . ").",
+                    'ok', implode("\n", $geradas));
             } catch (Throwable $ex) {
                 $msg='Erro ao emitir: '.$ex->getMessage(); $tipo='erro';
             }
@@ -166,7 +190,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='revogar') {
                 $lrow['pc'] ?? null, $lrow['tc'] ?? null,
                 'motivo: '.$motivo.($obs ? ' - '.$obs : ''));
 
-            $msg = 'Licenca revogada.'; $tipo = 'ok';
+            pos_acao('Licença revogada.', 'ok');
         }
     }
 }
@@ -192,7 +216,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='editar') {
         log_acao_painel($id, $lr->fetchColumn(), null, 'editar', 'ok',
             $u['id'], $u['nome'] ?? null, null, null,
             'vinculo/limite/anotacao alterados no painel');
-        $msg='Licença atualizada.'; $tipo='ok';
+        pos_acao('Licença atualizada.', 'ok');
     }
 }
 
@@ -230,10 +254,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                 $u['id'], $u['nome'] ?? null, $lrow['pc'], $lrow['tc'],
                 "de {$lrow['expira_em']} para $novo (+{$meses}m)");
 
-            $msg = 'Licença renovada até '.date('d/m/Y', strtotime($novo))
-                 . '. O cliente recebe a nova validade na próxima '
-                 . 'revalidação (até 7 dias).';
-            $tipo='ok';
+            pos_acao('Licença renovada até '.date('d/m/Y', strtotime($novo))
+                . '. O cliente recebe a nova validade na próxima '
+                . 'revalidação (até 7 dias).', 'ok');
         }
     }
 }
