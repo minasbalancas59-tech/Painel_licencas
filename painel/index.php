@@ -18,6 +18,41 @@ exige_admin_escopo();
  *  uma coluna `valor` em licencas (ver rodape desta tela).
  * ===================================================================== */
 
+/* ---------------------------------------------------------------------
+ *  FILTRO POR PRODUTO
+ * ---------------------------------------------------------------------
+ *  Vale para a tela inteira - indicadores, graficos e tabelas. Um
+ *  filtro que age so em parte da tela confunde mais do que ajuda.
+ *
+ *  O produto vive em `licencas`. As tabelas `maquinas` e `acessos` nao
+ *  o tem, entao precisam de JOIN. Consequencia: ao filtrar, maquinas
+ *  sem licenca vinculada somem - o que e correto, porque nao da para
+ *  afirmar de qual produto elas sao.
+ * ------------------------------------------------------------------- */
+$produtos = db()->query(
+  'SELECT id, codigo, nome FROM produtos WHERE ativo=1 ORDER BY codigo')
+  ->fetchAll();
+
+$fProd = trim($_GET['produto'] ?? '');
+$prodValidos = array_column($produtos, 'codigo');
+if ($fProd !== '' && !in_array($fProd, $prodValidos, true)) $fProd = '';
+
+$prodNome = '';
+foreach ($produtos as $pp)
+    if ($pp['codigo'] === $fProd) $prodNome = $pp['nome'];
+
+// fragmentos prontos, para nao repetir o mesmo JOIN em 13 consultas
+if ($fProd !== '') {
+    $joinProd = 'JOIN produtos pf ON pf.id = l.produto_id AND pf.codigo = '
+              . db()->quote($fProd);
+    $wLic  = 'AND l.produto_id = (SELECT id FROM produtos WHERE codigo = '
+           . db()->quote($fProd) . ')';
+    $wLicW = 'WHERE l.produto_id = (SELECT id FROM produtos WHERE codigo = '
+           . db()->quote($fProd) . ')';
+} else {
+    $joinProd = ''; $wLic = ''; $wLicW = '';
+}
+
 $anoAtual = (int)date('Y');
 $fAno = (int)($_GET['ano'] ?? $anoAtual);
 
@@ -33,16 +68,24 @@ $kpi = db()->query(
      SUM(YEAR(emitido_em)=YEAR(CURDATE()))                           AS ano_corrente,
      SUM(YEAR(emitido_em)=YEAR(CURDATE())
          AND MONTH(emitido_em)=MONTH(CURDATE()))                     AS mes_corrente
-   FROM licencas")->fetch();
+   FROM licencas l $wLicW")->fetch();
 
-$clientesTotal = db()->query('SELECT COUNT(*) FROM clientes')->fetchColumn();
+$clientesTotal = $fProd === ''
+  ? db()->query('SELECT COUNT(*) FROM clientes')->fetchColumn()
+  : db()->query("SELECT COUNT(DISTINCT l.cliente_id) FROM licencas l $wLicW")
+        ->fetchColumn();
 
+// maquinas sem licenca vinculada saem quando ha filtro: nao da para
+// dizer de qual produto elas sao
 $maq = db()->query(
   "SELECT COUNT(*) AS total,
-          SUM(ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 7 DAY))  AS ativas7,
-          SUM(ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 30 DAY)) AS ativas30,
-          SUM(origem='dongle')                                   AS dongle
-     FROM maquinas")->fetch();
+          SUM(m.ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 7 DAY))  AS ativas7,
+          SUM(m.ultimo_acesso >= DATE_SUB(NOW(), INTERVAL 30 DAY)) AS ativas30,
+          SUM(m.origem='dongle')                                   AS dongle
+     FROM maquinas m " .
+  ($fProd === '' ? '' :
+     "JOIN licencas l ON l.id = m.licenca_id $wLic ")
+  )->fetch();
 
 // ---- rotulos dos ultimos 12 meses ------------------------------------
 // preenchidos mesmo sem emissao, senao o grafico "pula" periodos vazios
@@ -53,16 +96,18 @@ for ($i = 11; $i >= 0; $i--) {
 
 // ---- emissao por ano -------------------------------------------------
 $anos = db()->query(
-  "SELECT YEAR(emitido_em) AS ano, COUNT(*) AS n
-     FROM licencas GROUP BY ano ORDER BY ano")->fetchAll();
+  "SELECT YEAR(l.emitido_em) AS ano, COUNT(*) AS n
+     FROM licencas l $wLicW GROUP BY ano ORDER BY ano")->fetchAll();
 $labAno = array_column($anos, 'ano');
 $datAno = array_map('intval', array_column($anos, 'n'));
 
 // ---- uso diario (30 dias, sinais de abertura) ------------------------
 $uso = db()->query(
-  "SELECT DATE(ts) AS dia, COUNT(*) AS n
-     FROM acessos
-    WHERE tipo='abertura' AND ts >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+  "SELECT DATE(a.ts) AS dia, COUNT(*) AS n
+     FROM acessos a " .
+  ($fProd === '' ? '' : "JOIN licencas l ON l.id = a.licenca_id $wLic ") .
+  "WHERE a.tipo='abertura'
+      AND a.ts >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
     GROUP BY dia ORDER BY dia")->fetchAll();
 $usoRaw = [];
 foreach ($uso as $r) $usoRaw[$r['dia']] = (int)$r['n'];
@@ -74,7 +119,9 @@ for ($i = 29; $i >= 0; $i--) {
 }
 
 // ---- por produto -----------------------------------------------------
-$porProd = db()->query(
+// so faz sentido sem filtro: com um produto escolhido seria uma
+// fatia unica de 100%
+$porProd = $fProd !== '' ? [] : db()->query(
   "SELECT COALESCE(p.nome,'(sem produto)') AS nome, COUNT(*) AS n
      FROM licencas l LEFT JOIN produtos p ON p.id=l.produto_id
     GROUP BY nome ORDER BY n DESC")->fetchAll();
@@ -87,12 +134,14 @@ $porTier = db()->query(
      FROM licencas l
      LEFT JOIN tiers t    ON t.id = l.tier_id
      LEFT JOIN produtos p ON p.id = l.produto_id
+   $wLicW
     GROUP BY nome ORDER BY n DESC")->fetchAll();
 
 // ---- emissao mensal separada por tier (barras empilhadas) ------------
 $tiersLista = db()->query(
   "SELECT DISTINCT COALESCE(t.nome,'(sem tipo)') AS nome
      FROM licencas l LEFT JOIN tiers t ON t.id=l.tier_id
+   $wLicW
     ORDER BY nome")->fetchAll(PDO::FETCH_COLUMN);
 
 $stMT = db()->query(
@@ -100,6 +149,7 @@ $stMT = db()->query(
           COALESCE(t.nome,'(sem tipo)') AS tier, COUNT(*) AS n
      FROM licencas l LEFT JOIN tiers t ON t.id=l.tier_id
     WHERE l.emitido_em >= DATE_SUB(DATE_FORMAT(CURDATE(),'%Y-%m-01'), INTERVAL 11 MONTH)
+      $wLic
     GROUP BY mes, tier")->fetchAll();
 $mtRaw = [];
 foreach ($stMT as $r) $mtRaw[$r['mes']][$r['tier']] = (int)$r['n'];
@@ -117,8 +167,9 @@ foreach ($tiersLista as $tn) {
 
 // ---- venda x demonstracao -------------------------------------------
 $porTipoLic = db()->query(
-  "SELECT tipo_licenca, COUNT(*) AS n FROM licencas
-    GROUP BY tipo_licenca ORDER BY n DESC")->fetchAll();
+  "SELECT l.tipo_licenca, COUNT(*) AS n FROM licencas l
+   $wLicW
+    GROUP BY l.tipo_licenca ORDER BY n DESC")->fetchAll();
 
 // ---- por revendedor --------------------------------------------------
 $porRev = db()->query(
@@ -128,11 +179,13 @@ $porRev = db()->query(
           SUM(l.cliente_id IS NULL)     AS estoque,
           SUM(l.transferencias)         AS transf
      FROM licencas l LEFT JOIN usuarios u ON u.id=l.revendedor_id
+   $wLicW
     GROUP BY nome ORDER BY total DESC")->fetchAll();
 
 // ---- status ----------------------------------------------------------
 $porStatus = db()->query(
-  "SELECT status, COUNT(*) AS n FROM licencas GROUP BY status")->fetchAll();
+  "SELECT l.status, COUNT(*) AS n FROM licencas l
+   $wLicW GROUP BY l.status")->fetchAll();
 
 // cor por status, na MESMA ordem dos labels (o Chart.js exige array,
 // nao objeto: um objeto vira cores indefinidas e as fatias saem pretas)
@@ -150,6 +203,7 @@ $vencendo = db()->query(
      LEFT JOIN produtos p ON p.id=l.produto_id
     WHERE l.status='ativa'
       AND l.expira_em BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 90 DAY)
+      $wLic
     ORDER BY l.expira_em LIMIT 15")->fetchAll();
 
 // ---- atividade recente ----------------------------------------------
@@ -158,12 +212,26 @@ $ultimos = db()->query(
      FROM ativacoes_log a
      LEFT JOIN licencas l ON l.id = a.licenca_id
      LEFT JOIN clientes c ON c.id = l.cliente_id
+   $wLicW
     ORDER BY a.id DESC LIMIT 10")->fetchAll();
 
 abre_pagina('Painel', 'painel');
 ?>
 <h1 class="titulo">Visão geral</h1>
-<p class="subtitulo">Licenças, uso do software e desempenho por revendedor</p>
+<p class="subtitulo">
+  <?= $fProd === ''
+      ? 'Licenças, uso do software e desempenho por revendedor'
+      : 'Mostrando apenas ' . e($prodNome) ?>
+</p>
+
+<div style="display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap">
+  <a class="btn <?= $fProd === '' ? '' : 'sec' ?> pequeno"
+     href="index.php">Todos</a>
+  <?php foreach ($produtos as $pp): ?>
+    <a class="btn <?= $fProd === $pp['codigo'] ? '' : 'sec' ?> pequeno"
+       href="index.php?produto=<?= e($pp['codigo']) ?>"><?= e($pp['nome']) ?></a>
+  <?php endforeach; ?>
+</div>
 
 <div class="stats">
   <div class="stat"><div class="n"><?= (int)$kpi['ativas'] ?></div><div class="l">Licenças ativas</div></div>
@@ -184,15 +252,17 @@ abre_pagina('Painel', 'painel');
   <canvas id="gEmissao" height="90"></canvas>
 </div>
 
-<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+<div style="display:grid;grid-template-columns:<?= $porProd ? '1fr 1fr' : '1fr' ?>;gap:16px">
   <div class="card">
     <h3>Por ano</h3>
-    <canvas id="gAno" height="150"></canvas>
+    <canvas id="gAno" height="<?= $porProd ? 150 : 90 ?>"></canvas>
   </div>
-  <div class="card">
-    <h3>Por software</h3>
-    <canvas id="gProduto" height="150"></canvas>
-  </div>
+  <?php if ($porProd): ?>
+    <div class="card">
+      <h3>Por software</h3>
+      <canvas id="gProduto" height="150"></canvas>
+    </div>
+  <?php endif; ?>
 </div>
 
 <div style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
@@ -372,6 +442,7 @@ new Chart(document.getElementById('gAno'), {
              y: { ...grade, beginAtZero: true, ticks: { precision: 0, color: CINZA } } } }
 });
 
+<?php if ($porProd): ?>
 new Chart(document.getElementById('gProduto'), {
   type: 'doughnut',
   data: {
@@ -382,6 +453,7 @@ new Chart(document.getElementById('gProduto'), {
   },
   options: { plugins: { legend: { position: 'right' } } }
 });
+<?php endif; ?>
 
 new Chart(document.getElementById('gUso'), {
   type: 'line',
