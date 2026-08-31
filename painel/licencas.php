@@ -63,7 +63,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
     else {
         $cliId    = (int)($_POST['cliente_id'] ?? 0);
         $tierId   = (int)($_POST['tier_id'] ?? 0);
-        $meses    = (int)($_POST['meses'] ?? 12);
+        // teto de 240 meses (20 anos): sem limite, um valor absurdo
+        // vindo do formulario geraria data invalida no strtotime
+        $meses    = max(1, min(240, (int)($_POST['meses'] ?? 12)));
         $carencia = (int)($_POST['carencia'] ?? 15);
         $mods     = $_POST['modulos'] ?? [];
         // destino explicito: evita o engano de deixar o cliente vazio
@@ -603,9 +605,15 @@ abre_pagina('Licenças', 'licencas');
       <div>
         <label>Validade</label>
         <select name="meses">
-          <?php foreach ([1=>'1 mês (teste)', 3=>'3 meses', 6=>'6 meses',
-                          12=>'12 meses', 24=>'24 meses',
-                          120=>'10 anos (perpétua)'] as $mv => $mr): ?>
+          <?php foreach ([1   => '1 mês (teste)',
+                          3   => '3 meses',
+                          6   => '6 meses',
+                          12  => '12 meses (1 ano)',
+                          24  => '24 meses (2 anos)',
+                          36  => '36 meses (3 anos)',
+                          48  => '48 meses (4 anos)',
+                          60  => '60 meses (5 anos)',
+                          120 => '10 anos (perpétua)'] as $mv => $mr): ?>
             <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
               <?= $mr ?></option>
           <?php endforeach; ?>
@@ -973,9 +981,15 @@ abre_pagina('Licenças', 'licencas');
                   <input type="hidden" name="id" value="<?= $l['id'] ?>">
                   <div><label style="font-size:11px">Renovar por</label>
                     <select name="meses_renov">
-                      <option value="6">6 meses</option>
-                      <option value="12" selected>12 meses</option>
-                      <option value="24">24 meses</option>
+                      <?php foreach ([6  => '6 meses',
+                                      12 => '12 meses',
+                                      24 => '24 meses',
+                                      36 => '36 meses',
+                                      48 => '48 meses',
+                                      60 => '60 meses'] as $rv => $rr): ?>
+                        <option value="<?= $rv ?>"
+                          <?= $rv === 12 ? 'selected' : '' ?>><?= $rr ?></option>
+                      <?php endforeach; ?>
                     </select></div>
                   <button class="btn pequeno">Renovar</button>
                 </form>
