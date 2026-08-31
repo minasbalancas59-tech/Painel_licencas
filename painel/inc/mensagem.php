@@ -32,6 +32,32 @@ function mensagem_licenca(array $lic): string {
 
     $t  = '*LICENCA ' . ($nomeProduto ?: 'TOTAL SCALE') . '*' . $q . $q;
 
+    /* ---------------------------------------------------------------
+     * Licenca SEM cliente = estoque do revendedor. A mensagem de
+     * ativacao nao serve aqui: ele nao vai ativar nada, precisa e
+     * vincular ao cliente dele antes de repassar. Enviar o passo a
+     * passo agora faria ele ativar na propria maquina para "testar" -
+     * e queimar a licenca.
+     * --------------------------------------------------------------- */
+    if (empty($lic['cliente_id'])) {
+        if (!empty($lic['tier_nome'])) $t .= 'Tipo: ' . $lic['tier_nome'] . $q;
+        if (!empty($lic['modulos']))   $t .= 'Modulos: ' . $lic['modulos'] . $q;
+        if (($lic['tipo_licenca'] ?? '') === 'demo')
+            $t .= 'Uso: DEMONSTRACAO' . $q;
+
+        $t .= $q . '*CHAVE*' . $q . $lic['chave'] . $q . $q;
+
+        $t .= '*ESTA LICENCA ESTA NO SEU ESTOQUE*' . $q . $q;
+        $t .= '1) No painel, va em Minhas licencas' . $q;
+        $t .= '2) Cadastre o cliente em Meus clientes, se ainda nao existir' . $q;
+        $t .= '3) Vincule esta chave ao cliente' . $q;
+        $t .= '4) So entao repasse a chave para ele ativar' . $q . $q;
+
+        $t .= 'Vincular antes de repassar mantem o cadastro correto e '
+            . 'permite que voce libere a maquina se o PC do cliente queimar.';
+        return $t;
+    }
+
     if ($cliente) $t .= 'Cliente: ' . $cliente . $q;
     if (!empty($lic['tier_nome'])) $t .= 'Tipo: ' . $lic['tier_nome'] . $q;
     if (!empty($lic['modulos']))   $t .= 'Modulos: ' . $lic['modulos'] . $q;

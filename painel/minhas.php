@@ -2,6 +2,7 @@
 require 'inc/auth.php';
 require 'inc/layout.php';
 require 'inc/escopo.php';
+require 'inc/mensagem.php';
 exige_login();
 
 /* =====================================================================
@@ -380,6 +381,7 @@ abre_pagina('Minhas licenças', 'minhas');
           <?php endif; ?>
         </td>
         <td style="white-space:nowrap">
+          <?= botao_whatsapp($l, 'm'.$l['id']) ?>
           <?php if (isset($pendTroca[(int)$l['id']])): ?>
             <span class="badge nova" style="font-size:10px">troca solicitada</span>
           <?php elseif ($l['cliente_id'] && !$ehDemo): ?>
@@ -449,4 +451,5 @@ function pedirTroca(id, chave) {
   document.getElementById('modalTroca').style.display = 'flex';
 }
 </script>
+<?= script_copiar_licenca() ?>
 <?php fecha_pagina();
