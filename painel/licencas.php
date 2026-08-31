@@ -3,6 +3,7 @@ require 'inc/auth.php';
 require 'inc/layout.php';
 require 'inc/escopo.php';
 require_once __DIR__ . '/../api/lib/config_db.php';
+require 'inc/mensagem.php';
 exige_login();
 exige_admin_escopo();
 
@@ -841,6 +842,9 @@ abre_pagina('Licenças', 'licencas');
 
             <div>
               <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">AÇÕES</h4>
+              <div style="margin-bottom:12px">
+                <?= botao_whatsapp($l, 'lic'.$l['id']) ?>
+              </div>
               <?php if ($l['status']!=='revogada'): ?>
                 <form method="post" action="<?= e(linkLic()) ?>"
                       style="display:flex;gap:8px;align-items:flex-end;margin-bottom:12px">
@@ -973,6 +977,7 @@ abre_pagina('Licenças', 'licencas');
   </div>
 </div>
 
+<?= script_copiar_licenca() ?>
 <script>
 function filtrarPorProduto() {
   var prod = document.getElementById('produto_sel');

@@ -2,6 +2,7 @@
 require 'inc/auth.php';
 require 'inc/layout.php';
 require 'inc/escopo.php';
+require 'inc/mensagem.php';
 exige_login();
 
 /* =====================================================================
@@ -685,11 +686,11 @@ abre_pagina('Cliente', 'clientes');
   <table style="margin-top:16px">
     <thead><tr>
       <th>Chave</th><th>Software/Tipo</th><th>Emitida</th>
-      <th>Expira</th><th>Situação</th><th>Máquina</th><th></th>
+      <th>Expira</th><th>Situação</th><th>Máquina</th><th></th><th></th>
     </tr></thead>
     <tbody>
     <?php if (!$licencas): ?>
-      <tr><td colspan="7" style="color:var(--texto-2)">
+      <tr><td colspan="8" style="color:var(--texto-2)">
         Nenhuma licença para os filtros escolhidos.
       </td></tr>
     <?php else: foreach ($licencas as $l):
@@ -741,9 +742,10 @@ abre_pagina('Cliente', 'clientes');
           <button type="button" class="btn sec pequeno"
                   onclick="detalhe(<?= $l['id'] ?>)">Detalhes</button>
         </td>
+        <td><?= botao_whatsapp($l, 'c'.$l['id']) ?></td>
       </tr>
       <tr id="det<?= $l['id'] ?>" style="display:none">
-        <td colspan="7" style="background:var(--bg-3);padding:16px">
+        <td colspan="8" style="background:var(--bg-3);padding:16px">
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:24px">
 
             <div>
@@ -1073,4 +1075,5 @@ function buscarCnpj() {
     });
 }
 </script>
+<?= script_copiar_licenca() ?>
 <?php fecha_pagina();
