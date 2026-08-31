@@ -43,7 +43,21 @@ function chave_publica(): string {
  * Gera uma chave de licenca legivel (o cliente digita esta chave)
  *   formato: TS6X-XXXX-XXXX-XXXX  (sem caracteres ambiguos)
  * ----------------------------------------------------------------- */
-function gerar_chave_licenca(): string {
+/**
+ * Gera a chave de registro no formato PREFIXO-XXXX-XXXX-XXXX.
+ *
+ * O prefixo vem do codigo do produto: ts5 -> TS5X, tslpr -> TSLPRX.
+ * Antes era fixo em 'TS6X' para todos, e um cliente do TS5 recebia
+ * chave comecando com "TS6" - confusao garantida no atendimento.
+ *
+ * O prefixo e apenas um rotulo: a validacao continua sendo pelo
+ * produto_id gravado no banco e pelo campo "produto" da licenca
+ * assinada. Chaves antigas com TS6X seguem valendo.
+ *
+ * @param string $produtoCodigo codigo do produto (ex: 'ts5'). Vazio
+ *                              mantem o prefixo historico.
+ */
+function gerar_chave_licenca(string $produtoCodigo = ''): string {
     $alfabeto = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // sem I,O,0,1
     $bloco = function() use ($alfabeto) {
         $s = '';
@@ -51,7 +65,13 @@ function gerar_chave_licenca(): string {
             $s .= $alfabeto[random_int(0, strlen($alfabeto)-1)];
         return $s;
     };
-    return 'TS6X-' . $bloco() . '-' . $bloco() . '-' . $bloco();
+
+    $cod = strtoupper(preg_replace('/[^a-zA-Z0-9]/', '', $produtoCodigo));
+    // limita a 6 para nao estourar o VARCHAR(35) da coluna chave
+    if ($cod === '') $cod = 'TS6';
+    $prefixo = substr($cod, 0, 6) . 'X';
+
+    return $prefixo . '-' . $bloco() . '-' . $bloco() . '-' . $bloco();
 }
 
 /* -------------------------------------------------------------------

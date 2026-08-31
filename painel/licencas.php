@@ -93,7 +93,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                    VALUES (?,?,?,?,?,?,?,?,?,"nova",?,?)');
 
                 for ($i = 0; $i < $qtd; $i++) {
-                    $chave = gerar_chave_licenca();
+                    // prefixo pelo produto: TS5X, TS6X, TSLPRX...
+                    $chave = gerar_chave_licenca($t['produto_codigo']);
                     $st->execute([
                         ($cliId ?: null), $revId,
                         $t['produto_id'],   // vem do JOIN em resolver_tier()
