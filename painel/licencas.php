@@ -4,6 +4,7 @@ require 'inc/layout.php';
 require 'inc/escopo.php';
 require_once __DIR__ . '/../api/lib/config_db.php';
 require 'inc/mensagem.php';
+require 'inc/email_licenca.php';
 exige_login();
 exige_admin_escopo();
 
@@ -142,15 +143,59 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                         . ($revId ? ", revendedor {$revId}" : ''));
                 }
 
+                // envia a chave por e-mail: o WhatsApp some na conversa,
+                // o e-mail fica. Falha aqui nao invalida a emissao.
+                $avisoMail = '';
+                if ($cliId > 0 && $idsEmitidos) {
+                    $stM = db()->prepare(
+                      'SELECT l.*, c.razao_social, c.nome_fantasia,
+                              p.codigo AS produto_codigo
+                         FROM licencas l
+                         LEFT JOIN clientes c ON c.id=l.cliente_id
+                         LEFT JOIN produtos p ON p.id=l.produto_id
+                        WHERE l.id = ?');
+                    $enviados = 0;
+                    foreach ($idsEmitidos as $lid) {
+                        $stM->execute([$lid]);
+                        $rowM = $stM->fetch();
+                        if ($rowM) {
+                            list($n, $txt) = enviar_licenca_email($rowM);
+                            $enviados += $n;
+                            if ($n === 0) $avisoMail = ' ' . $txt;
+                        }
+                    }
+                    if ($enviados > 0)
+                        $avisoMail = ' Chave enviada por e-mail ao cliente.';
+                }
+
                 pos_acao(
                     count($geradas) . " licença(s) emitida(s) "
                     . "({$t['produto_codigo']} · {$t['tier_codigo']}"
-                    . ($tipoLic === 'demo' ? ' · demonstração' : '') . ").",
+                    . ($tipoLic === 'demo' ? ' · demonstração' : '') . ")."
+                    . $avisoMail,
                     'ok', implode("\n", $geradas), $idsEmitidos);
             } catch (Throwable $ex) {
                 $msg='Erro ao emitir: '.$ex->getMessage(); $tipo='erro';
             }
         }
+    }
+}
+
+// --- reenviar a chave por e-mail ------------------------------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='reenviar') {
+    if (csrf_valido()) {
+        $stE = db()->prepare(
+          'SELECT l.*, c.razao_social, c.nome_fantasia,
+                  p.codigo AS produto_codigo
+             FROM licencas l
+             LEFT JOIN clientes c ON c.id=l.cliente_id
+             LEFT JOIN produtos p ON p.id=l.produto_id
+            WHERE l.id = ?');
+        $stE->execute([(int)$_POST['id']]);
+        $rowE = $stE->fetch();
+        if (!$rowE) pos_acao('Licença não encontrada.', 'erro');
+        list($n, $txt) = enviar_licenca_email($rowE);
+        pos_acao($txt, $n > 0 ? 'ok' : 'erro');
     }
 }
 
@@ -487,6 +532,14 @@ abre_pagina('Licenças', 'licencas');
               count($recem) > 1
                 ? 'Copiar ' . substr($rl['chave'], -4)
                 : 'Copiar p/ WhatsApp') ?>
+        <?php if (!empty($rl['cliente_id'])): ?>
+          <form method="post" action="licencas.php" style="display:inline">
+            <input type="hidden" name="acao" value="reenviar">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <input type="hidden" name="id" value="<?= $rl['id'] ?>">
+            <button class="btn sec">Reenviar por e-mail</button>
+          </form>
+        <?php endif; ?>
       <?php endforeach; ?>
       <a class="btn sec" href="licencas.php">Voltar</a>
     </div>
@@ -899,8 +952,18 @@ abre_pagina('Licenças', 'licencas');
 
             <div>
               <h4 style="margin:0 0 8px;font-size:12px;color:var(--ambar)">AÇÕES</h4>
-              <div style="margin-bottom:12px">
+              <div style="margin-bottom:12px;display:flex;gap:6px;flex-wrap:wrap">
                 <?= botao_whatsapp($l, 'lic'.$l['id']) ?>
+                <?php if (!empty($l['cliente_id'])): ?>
+                  <form method="post" action="<?= e(linkLic()) ?>" style="display:inline">
+                    <input type="hidden" name="acao" value="reenviar">
+                    <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                    <input type="hidden" name="id" value="<?= $l['id'] ?>">
+                    <button class="btn sec pequeno"
+                            title="Reenvia a chave para o e-mail do cliente">
+                      Reenviar por e-mail</button>
+                  </form>
+                <?php endif; ?>
               </div>
               <?php if ($l['status']!=='revogada'): ?>
                 <form method="post" action="<?= e(linkLic()) ?>"
