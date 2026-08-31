@@ -27,7 +27,7 @@ exige_admin_escopo();
  *  outra licenca.
  * ===================================================================== */
 
-$msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false;
+$msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false; $idsGerados=[];
 
 /* ---------------------------------------------------------------------
  *  POST / Redirect / GET
@@ -39,8 +39,10 @@ $msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false;
  *  chave gerada) viaja na sessao, para sobreviver ao redirect sem
  *  aparecer na URL.
  * ------------------------------------------------------------------- */
-function pos_acao(string $msg, string $tipo, string $chave = ''): void {
-    $_SESSION['flash'] = ['msg' => $msg, 'tipo' => $tipo, 'chave' => $chave];
+function pos_acao(string $msg, string $tipo, string $chave = '',
+                  array $ids = []): void {
+    $_SESSION['flash'] = ['msg' => $msg, 'tipo' => $tipo,
+                          'chave' => $chave, 'ids' => $ids];
     header('Location: ' . $_SERVER['REQUEST_URI']);
     exit;
 }
@@ -50,6 +52,7 @@ if (!empty($_SESSION['flash'])) {
     $msg         = $_SESSION['flash']['msg']   ?? '';
     $tipo        = $_SESSION['flash']['tipo']  ?? '';
     $chaveGerada = $_SESSION['flash']['chave'] ?? '';
+    $idsGerados  = $_SESSION['flash']['ids']   ?? [];
     unset($_SESSION['flash']);
 }
 
@@ -109,6 +112,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                 $exp   = date('Y-m-d', strtotime("+$meses months"));
                 $u     = usuario_logado();
                 $geradas = [];
+                $idsEmitidos = [];
 
                 // grava a(s) licenca(s) - fingerprint fica NULL ate a ativacao
                 $st = db()->prepare(
@@ -128,6 +132,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                     ]);
                     $licId = (int)db()->lastInsertId();
                     $geradas[] = $chave;
+                    $idsEmitidos[] = $licId;
 
                     log_acao_painel(
                         $licId, $chave, null, 'emitir', 'ok',
@@ -141,7 +146,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                     count($geradas) . " licença(s) emitida(s) "
                     . "({$t['produto_codigo']} · {$t['tier_codigo']}"
                     . ($tipoLic === 'demo' ? ' · demonstração' : '') . ").",
-                    'ok', implode("\n", $geradas));
+                    'ok', implode("\n", $geradas), $idsEmitidos);
             } catch (Throwable $ex) {
                 $msg='Erro ao emitir: '.$ex->getMessage(); $tipo='erro';
             }
@@ -457,6 +462,35 @@ abre_pagina('Licenças', 'licencas');
   <div class="card">
     <h3>Chave gerada</h3>
     <div class="codigo"><?= e($chaveGerada) ?></div>
+
+    <?php
+    // busca as licencas recem-emitidas para montar a mensagem de envio
+    $recem = [];
+    if ($idsGerados) {
+        $inQ = implode(',', array_fill(0, count($idsGerados), '?'));
+        $stR = db()->prepare(
+          "SELECT l.*, c.razao_social, c.nome_fantasia,
+                  p.codigo AS produto_codigo, t.nome AS tier_nome
+             FROM licencas l
+             LEFT JOIN clientes c ON c.id = l.cliente_id
+             LEFT JOIN produtos p ON p.id = l.produto_id
+             LEFT JOIN tiers    t ON t.id = l.tier_id
+            WHERE l.id IN ($inQ)");
+        $stR->execute($idsGerados);
+        $recem = $stR->fetchAll();
+    }
+    ?>
+
+    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+      <?php foreach ($recem as $rl): ?>
+        <?= botao_whatsapp($rl, 'nova'.$rl['id'],
+              count($recem) > 1
+                ? 'Copiar ' . substr($rl['chave'], -4)
+                : 'Copiar p/ WhatsApp') ?>
+      <?php endforeach; ?>
+      <a class="btn sec" href="licencas.php">Voltar</a>
+    </div>
+
     <p class="subtitulo" style="margin-top:12px">
       O cliente digita esta chave no software (ativação online) ou você a usa
       na aba <a href="offline.php">Ativação offline</a> se o PC dele não tiver internet.

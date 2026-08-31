@@ -36,7 +36,7 @@ function mensagem_licenca(array $lic): string {
     if (!empty($lic['tier_nome'])) $t .= 'Tipo: ' . $lic['tier_nome'] . $q;
     if (!empty($lic['modulos']))   $t .= 'Modulos: ' . $lic['modulos'] . $q;
 
-    $t .= 'Valida ate: ' . date('d/m/Y', strtotime($lic['expira_em'])) . $q . $q;
+    $t .= $q;
 
     $t .= '*CHAVE DE REGISTRO*' . $q;
     $t .= $lic['chave'] . $q . $q;
@@ -62,7 +62,7 @@ function mensagem_licenca(array $lic): string {
  * Botão que copia a mensagem. Cada chamada precisa de um id único,
  * porque a mesma página lista várias licenças.
  */
-function botao_whatsapp(array $lic, string $id): string {
+function botao_whatsapp(array $lic, string $id, string $rotulo = ''): string {
     $texto = mensagem_licenca($lic);
     $json  = htmlspecialchars(json_encode($texto, JSON_UNESCAPED_UNICODE),
                               ENT_QUOTES, 'UTF-8');
@@ -70,7 +70,7 @@ function botao_whatsapp(array $lic, string $id): string {
          . 'data-msg="' . $json . '" '
          . 'onclick="copiarLicenca(this)" '
          . 'title="Copia a chave e o passo a passo para enviar ao cliente">'
-         . 'Copiar p/ WhatsApp</button>';
+         . ($rotulo !== '' ? $rotulo : 'Copiar p/ WhatsApp') . '</button>';
 }
 
 /** Script de cópia — inclua uma vez por página. */
