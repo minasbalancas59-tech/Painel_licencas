@@ -318,7 +318,21 @@ abre_pagina('Minhas licenças', 'minhas');
 <?php endif; ?>
 
 <div class="card">
-  <h3>Estoque</h3>
+  <?php
+  // Licenças ainda livres — as que ele pode repassar. Já vinculadas
+  // pertencem a clientes diferentes e não cabem numa mensagem só.
+  $livresLote = array_values(array_filter($licencas,
+      function ($x) { return empty($x['cliente_id'])
+                          && $x['status'] !== 'revogada'; }));
+  ?>
+  <div style="display:flex;justify-content:space-between;align-items:center;
+       gap:16px;flex-wrap:wrap">
+    <h3 style="margin:0">Estoque</h3>
+    <?php if (count($livresLote) > 1): ?>
+      <?= botao_whatsapp_lote($livresLote,
+            'Copiar as ' . count($livresLote) . ' chaves livres') ?>
+    <?php endif; ?>
+  </div>
   <table>
     <thead><tr>
       <th>Chave</th><th>Software / Tipo</th><th>Cliente</th>

@@ -2,6 +2,7 @@
 require 'inc/auth.php';
 require 'inc/layout.php';
 require 'inc/escopo.php';
+require 'inc/mensagem.php';
 exige_login();
 exige_admin_escopo();
 
@@ -400,7 +401,22 @@ abre_pagina('Revendedor', 'revendedores');
 </div>
 
 <div class="card">
-  <h3>Licenças (<?= count($licencas) ?>)</h3>
+  <?php
+  // Só as licenças ainda em estoque entram no botão de lote: as já
+  // vinculadas pertencem a clientes diferentes e não fazem sentido
+  // numa mensagem só.
+  $emEstoque = array_values(array_filter($licencas,
+      function ($x) { return empty($x['cliente_id'])
+                          && $x['status'] !== 'revogada'; }));
+  ?>
+  <div style="display:flex;justify-content:space-between;align-items:center;
+       gap:16px;flex-wrap:wrap">
+    <h3 style="margin:0">Licenças (<?= count($licencas) ?>)</h3>
+    <?php if (count($emEstoque) > 1): ?>
+      <?= botao_whatsapp_lote($emEstoque,
+            'Copiar as ' . count($emEstoque) . ' chaves em estoque') ?>
+    <?php endif; ?>
+  </div>
   <form method="get" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
     <input type="hidden" name="id" value="<?= $id ?>">
     <div style="flex:1;min-width:200px">
@@ -452,6 +468,7 @@ abre_pagina('Revendedor', 'revendedores');
           <?php if (($l['tipo_licenca'] ?? '')==='demo'): ?>
             <br><span class="badge nova" style="font-size:10px">demonstração</span>
           <?php endif; ?>
+          <br><?= botao_whatsapp($l, 'r'.$l['id'], 'Copiar') ?>
         </td>
         <td class="mono" style="font-size:11px">
           <?= e(strtoupper($l['produto_codigo'] ?? '—')) ?>
@@ -597,4 +614,5 @@ function editarContato(id) {
   ver.style.display = abrindo ? 'none' : '';
 }
 </script>
+<?= script_copiar_licenca() ?>
 <?php fecha_pagina();
