@@ -159,6 +159,58 @@ function abre_pagina(string $titulo, string $pagina): void {
       .nav { display: flex; flex-wrap: wrap; }
       .nav .submenu { position: static; box-shadow: none; min-width: 0; }
     }
+
+    /* ---------------------------------------------------------------
+       CELULAR
+
+       As telas usam grid-template-columns fixo no atributo style, que
+       tem precedencia sobre folha de estilo - por isso o !important.
+       Sem isto, quatro colunas continuam quatro num aparelho de 380px:
+       cada campo fica com 80px e ninguem consegue digitar.
+
+       Desmonta em uma coluna so, mantendo a ordem visual.
+       --------------------------------------------------------------- */
+    @media (max-width: 760px) {
+      .wrap { padding-left: 12px; padding-right: 12px; }
+
+      .card > div[style*="grid"],
+      .card form > div[style*="grid"],
+      form > div[style*="grid"],
+      div[style*="grid-template-columns"] {
+        grid-template-columns: 1fr !important;
+        gap: 12px !important;
+      }
+
+      /* campos ocupam a largura toda e nao encolhem abaixo do usavel */
+      input, select, textarea { width: 100% !important; min-width: 0; }
+
+      /* os KPIs cabem em dois por linha; um so desperdicaria rolagem */
+      .stats { grid-template-columns: 1fr 1fr !important; gap: 10px !important; }
+      .stat .n { font-size: 22px; }
+
+      /* Tabelas largas rolam na horizontal em vez de espremer o texto.
+         So a tabela de PRIMEIRO nivel do card - as de dentro do dossie
+         sao pequenas e virariam blocos soltos com display:block. */
+      .card > table { display: block; overflow-x: auto; }
+      .card > table > thead > tr > th,
+      .card > table > tbody > tr > td { white-space: nowrap; }
+
+      /* a linha expandida do dossie precisa caber, nao rolar */
+      .card > table > tbody > tr > td[colspan] { white-space: normal; }
+      .card > table td[colspan] table { width: 100%; }
+
+      /* botoes lado a lado quebram em vez de sair da tela */
+      .card > div[style*="display:flex"],
+      form[style*="display:flex"] { flex-wrap: wrap !important; }
+
+      .titulo { font-size: 20px; }
+      h3 { font-size: 14px; }
+    }
+
+    /* aparelho pequeno de verdade: ate os KPIs viram uma coluna */
+    @media (max-width: 420px) {
+      .stats { grid-template-columns: 1fr !important; }
+    }
   </style>
 </head>
 <body>
