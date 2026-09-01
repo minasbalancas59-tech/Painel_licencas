@@ -16,6 +16,53 @@
  */
 
 /**
+ * Link fixo de download do produto — sempre a versão atual.
+ *
+ * Devolve string vazia se não houver instalador publicado: melhor
+ * omitir o bloco do que mandar um link que dá erro.
+ *
+ * O link é do PRODUTO, não da versão. Um cliente que guardar a
+ * mensagem e reinstalar daqui a um ano baixa a versão nova, não a
+ * de hoje.
+ */
+function link_instalador(?string $produtoCodigo): string {
+    static $cache = [];
+    if (!$produtoCodigo) return '';
+    if (isset($cache[$produtoCodigo])) return $cache[$produtoCodigo];
+
+    $url = '';
+    try {
+        $st = db()->prepare(
+          'SELECT p.token_download
+             FROM produtos p
+             JOIN versoes v ON v.produto_id = p.id
+                           AND v.atual = 1 AND v.publicada = 1
+            WHERE p.codigo = ? LIMIT 1');
+        $st->execute([$produtoCodigo]);
+        if ($tok = $st->fetchColumn()) {
+            $https = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off');
+            $url = ($https ? 'https://' : 'http://')
+                 . ($_SERVER['HTTP_HOST'] ?? 'licencas.totalscale.com.br')
+                 . '/baixar.php?p=' . $tok;
+        }
+    } catch (Throwable $e) { /* migração 20 ainda não aplicada */ }
+
+    return $cache[$produtoCodigo] = $url;
+}
+
+/** Bloco institucional, igual em todas as mensagens. */
+function rodape_institucional(): string {
+    $q = "\n";
+    return $q . '---' . $q
+         . '*TOTAL SCALE*' . $q
+         . 'Software de pesagem e automacao para balancas rodoviarias.' . $q
+         . 'Controle de cargas em mineracao, agro, reciclagem e transporte.'
+         . $q . $q
+         . 'Precisa de mais alguma coisa? Fale com a gente.' . $q
+         . '(31) 3357-4000 · www.totalscale.com.br';
+}
+
+/**
  * @param array $lic linha de `licencas` com os JOINs de cliente,
  *                   produto e tier já resolvidos
  */
@@ -31,6 +78,8 @@ function mensagem_licenca(array $lic): string {
                  : ($produto === 'TSLPR'? 'TS LPR' : $produto));
 
     $t  = '*LICENCA ' . ($nomeProduto ?: 'TOTAL SCALE') . '*' . $q . $q;
+    $t .= 'Obrigado por escolher o Total Scale. Sua licenca esta pronta.'
+        . $q . $q;
 
     /* ---------------------------------------------------------------
      * Licenca SEM cliente = estoque do revendedor. A mensagem de
@@ -56,7 +105,14 @@ function mensagem_licenca(array $lic): string {
         $t .= '4) So entao repasse a chave para ele ativar' . $q . $q;
 
         $t .= 'Vincular antes de repassar mantem o cadastro correto e '
-            . 'permite que voce libere a maquina se o PC do cliente queimar.';
+            . 'permite que voce libere a maquina se o PC do cliente queimar.'
+            . $q;
+
+        $dlE = link_instalador($lic['produto_codigo'] ?? null);
+        if ($dlE !== '')
+            $t .= $q . '*BAIXAR O SISTEMA*' . $q . $dlE . $q;
+
+        $t .= rodape_institucional();
         return $t;
     }
 
@@ -71,8 +127,13 @@ function mensagem_licenca(array $lic): string {
     $t .= '*CHAVE DE REGISTRO*' . $q;
     $t .= $lic['chave'] . $q . $q;
 
+    $dl = link_instalador($lic['produto_codigo'] ?? null);
+    if ($dl !== '')
+        $t .= '*BAIXAR O SISTEMA*' . $q . $dl . $q . $q;
+
     $t .= '*COMO ATIVAR*' . $q;
-    $t .= '1) Abra o ' . ($nomeProduto ?: 'sistema') . $q;
+    $t .= '1) ' . ($dl !== '' ? 'Instale o ' : 'Abra o ')
+        . ($nomeProduto ?: 'sistema') . $q;
     $t .= '2) Na tela de registro, cole a chave acima no campo '
         . '"Ativacao online"' . $q;
     $t .= '3) Clique em Ativar online' . $q . $q;
@@ -83,7 +144,10 @@ function mensagem_licenca(array $lic): string {
 
     $t .= '*SEM INTERNET NA MAQUINA?*' . $q;
     $t .= 'Na mesma tela, clique em "Copiar codigo", envie o codigo da '
-        . 'maquina para nos, e devolvemos o codigo de ativacao offline.';
+        . 'maquina para nos, e devolvemos o codigo de ativacao offline.'
+        . $q;
+
+    $t .= rodape_institucional();
 
     return $t;
 }
@@ -149,7 +213,13 @@ function mensagem_lote(array $lics): string {
 
     $t .= 'Cada chave vale para UMA maquina. Vincular antes de repassar '
         . 'mantem o cadastro correto e permite liberar a maquina se o PC '
-        . 'do cliente queimar.';
+        . 'do cliente queimar.' . $q;
+
+    $dlL = link_instalador($p['produto_codigo'] ?? null);
+    if ($dlL !== '')
+        $t .= $q . '*BAIXAR O SISTEMA*' . $q . $dlL . $q;
+
+    $t .= rodape_institucional();
 
     return $t;
 }

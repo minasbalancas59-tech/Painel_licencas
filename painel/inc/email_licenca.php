@@ -18,6 +18,7 @@
  */
 
 require_once __DIR__ . '/../../api/lib/smtp.php';
+require_once __DIR__ . '/mensagem.php';   // link_instalador()
 
 /**
  * Destinatários de um cliente: o contato principal primeiro, depois os
@@ -71,8 +72,10 @@ function enviar_licenca_email(array $lic): array {
     $html =
       '<div style="font-family:Arial,sans-serif;color:#14171a;max-width:620px">'
     . '<h2 style="margin:0 0 4px">Licença do ' . htmlspecialchars($nomeProd) . '</h2>'
-    . '<p style="color:#666;font-size:13px;margin:0 0 20px">'
+    . '<p style="color:#666;font-size:13px;margin:0 0 16px">'
     . htmlspecialchars($cliente) . '</p>'
+    . '<p style="font-size:14px;margin:0 0 20px">Obrigado por escolher o '
+    . 'Total Scale. Sua licença está pronta.</p>'
 
     . '<div style="background:#f7f9fa;border-left:3px solid #f0a92b;'
     . 'padding:14px 18px;margin-bottom:20px">'
@@ -86,9 +89,20 @@ function enviar_licenca_email(array $lic): array {
     . 'reinstalar o sistema ou trocar de computador, esta chave será '
     . 'solicitada.</p>'
 
+    . (($dl = link_instalador($lic['produto_codigo'] ?? null)) !== ''
+        ? '<h3 style="font-size:15px;margin:24px 0 8px">Baixar o sistema</h3>'
+        . '<p style="font-size:14px;margin:0 0 4px">'
+        . '<a href="' . htmlspecialchars($dl) . '" '
+        . 'style="color:#C67A0A;font-weight:bold">'
+        . 'Clique aqui para baixar o ' . htmlspecialchars($nomeProd) . '</a></p>'
+        . '<p style="font-size:12px;color:#666;margin:0">'
+        . 'Este link sempre entrega a versão mais recente.</p>'
+        : '')
+
     . '<h3 style="font-size:15px;margin:24px 0 8px">Como ativar</h3>'
     . '<ol style="font-size:14px;line-height:1.7;padding-left:20px;margin:0">'
-    . '<li>Abra o ' . htmlspecialchars($nomeProd) . '</li>'
+    . '<li>' . ($dl !== '' ? 'Instale' : 'Abra') . ' o '
+    . htmlspecialchars($nomeProd) . '</li>'
     . '<li>Na tela de registro, cole a chave acima em "Ativação online"</li>'
     . '<li>Clique em <b>Ativar online</b></li>'
     . '</ol>'
@@ -104,11 +118,20 @@ function enviar_licenca_email(array $lic): array {
     . 'código", envie o código para nós e devolvemos o código de ativação '
     . 'offline.</p>'
 
-    . '<p style="color:#93a1ac;font-size:11px;margin-top:24px;'
-    . 'border-top:1px solid #e0e0e0;padding-top:12px">'
-    . 'Enviado automaticamente pelo sistema de licenciamento em '
-    . date('d/m/Y H:i') . '. Em caso de dúvida, fale com o suporte.</p>'
-    . '</div>';
+    . '<div style="border-top:1px solid #e0e0e0;margin-top:28px;'
+    . 'padding-top:16px">'
+    . '<p style="font-size:13px;margin:0 0 4px"><b>TOTAL SCALE</b></p>'
+    . '<p style="font-size:13px;color:#444;margin:0 0 12px;line-height:1.6">'
+    . 'Software de pesagem e automação para balanças rodoviárias.<br>'
+    . 'Controle de cargas em mineração, agro, reciclagem e transporte.</p>'
+    . '<p style="font-size:13px;margin:0">'
+    . 'Precisa de mais alguma coisa? Fale com a gente.<br>'
+    . '(31) 3357-4000 &middot; '
+    . '<a href="https://www.totalscale.com.br" style="color:#C67A0A">'
+    . 'www.totalscale.com.br</a></p>'
+    . '<p style="color:#93a1ac;font-size:11px;margin-top:16px">'
+    . 'Enviado automaticamente em ' . date('d/m/Y H:i') . '.</p>'
+    . '</div></div>';
 
     $ok = 0; $erros = [];
     foreach ($dest as $e) {
