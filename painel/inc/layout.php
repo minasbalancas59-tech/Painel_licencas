@@ -124,10 +124,17 @@ function abre_pagina(string $titulo, string $pagina): void {
       border-radius: var(--radius); padding: 6px;
       box-shadow: 0 8px 24px rgba(0,0,0,.45);
     }
-    /* hover no desktop, clique no toque - o :focus-within cobre teclado */
+    /* No desktop o hover basta. No toque, o :hover dispara enquanto o
+       dedo esta pressionado e some ao soltar - por isso a classe
+       .aberto, controlada por JS, e quem segura o menu aberto.
+       O body.toque desliga o hover puro para nao piscar. */
     .nav .grupo:hover .submenu,
     .nav .grupo:focus-within .submenu,
     .nav .grupo.aberto .submenu { display: block; }
+
+    body.toque .nav .grupo:hover .submenu,
+    body.toque .nav .grupo:focus-within .submenu { display: none; }
+    body.toque .nav .grupo.aberto .submenu { display: block; }
 
     .nav .submenu a {
       display: block; padding: 9px 12px; border-radius: 4px;
@@ -211,22 +218,66 @@ function fecha_pagina(): void {
     ?>
   </div>
   <script>
-    // No toque nao existe hover: o primeiro clique no grupo abre o
-    // submenu em vez de navegar direto para a primeira tela dele.
-    (function () {
-      if (!window.matchMedia('(hover: none)').matches) return;
-      document.querySelectorAll('.nav .grupo > .rotulo').forEach(function (r) {
+  (function () {
+    // Detecta o TOQUE em si, nao o tipo de dispositivo.
+    // matchMedia('(hover: none)') falha em muitos celulares, que
+    // reportam hover como disponivel - e ai o menu abria enquanto o
+    // dedo pressionava e sumia ao soltar.
+    // O touchstart dispara ANTES do click, entao o primeiro toque ja
+    // chega marcado. Sem 'once', porque um aparelho hibrido (notebook
+    // com tela sensivel) pode alternar entre mouse e dedo.
+    var ehToque = false;
+    document.addEventListener('touchstart', function () {
+      ehToque = true;
+      document.body.classList.add('toque');
+    }, true);
+
+    // Mouse de verdade volta ao comportamento de hover. O toque tambem
+    // emite mousemove em alguns navegadores, mas com movimento zero -
+    // por isso a checagem de movementX/Y, e o atraso para ignorar o
+    // mousemove sintetico que vem logo apos o dedo.
+    var ultimoToque = 0;
+    document.addEventListener('touchstart', function () {
+      ultimoToque = Date.now();
+    }, { passive: true, capture: true });
+
+    document.addEventListener('mousemove', function (ev) {
+      if ((Date.now() - ultimoToque) < 800) return;
+      if (ev.movementX || ev.movementY) {
+        ehToque = false;
+        document.body.classList.remove('toque');
+      }
+    }, { passive: true });
+
+    function fecharTodos(exceto) {
+      var abertos = document.querySelectorAll('.nav .grupo.aberto');
+      for (var i = 0; i < abertos.length; i++)
+        if (abertos[i] !== exceto) abertos[i].classList.remove('aberto');
+    }
+
+    var rotulos = document.querySelectorAll('.nav .grupo > .rotulo');
+    for (var i = 0; i < rotulos.length; i++) {
+      (function (r) {
         r.addEventListener('click', function (ev) {
+          if (!ehToque) return;              // desktop: segue o link
           var g = r.parentElement;
           if (!g.classList.contains('aberto')) {
-            ev.preventDefault();
-            document.querySelectorAll('.nav .grupo.aberto')
-                    .forEach(function (o) { o.classList.remove('aberto'); });
+            ev.preventDefault();             // 1o toque abre o submenu
+            ev.stopPropagation();
+            fecharTodos(g);
             g.classList.add('aberto');
           }
+          // 2o toque no mesmo rotulo navega normalmente
         });
-      });
-    })();
+      })(rotulos[i]);
+    }
+
+    // tocar fora fecha o menu aberto
+    document.addEventListener('click', function (ev) {
+      if (!ev.target.closest || !ev.target.closest('.nav .grupo'))
+        fecharTodos(null);
+    });
+  })();
   </script>
 </body>
 </html>
