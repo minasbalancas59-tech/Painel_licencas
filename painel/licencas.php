@@ -29,6 +29,30 @@ exige_admin_escopo();
  * ===================================================================== */
 
 $msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false; $idsGerados=[];
+$u = usuario_logado();
+
+/* ---------------------------------------------------------------------
+ *  PRECO SUGERIDO
+ * ---------------------------------------------------------------------
+ *  Tabela do tier, proporcional aos meses, menos o desconto do
+ *  revendedor quando a venda e por ele.
+ *
+ *  E sugestao: o campo continua editavel. Preco de software raramente
+ *  sai redondo da tabela, e travar o valor faria o operador registrar
+ *  errado para conseguir salvar.
+ * ------------------------------------------------------------------- */
+function preco_sugerido(?float $base, int $meses, float $descRev = 0): ?float {
+    if ($base === null) return null;
+    // a tabela e anual; 6 meses custa metade, 24 custa o dobro
+    $v = $base * ($meses / 12);
+    if ($descRev > 0) $v = $v * (1 - $descRev / 100);
+    return round($v, 2);
+}
+
+function moeda(?float $v): string {
+    return $v === null ? '—' : 'R$ ' . number_format($v, 2, ',', '.');
+}
+
 
 /* ---------------------------------------------------------------------
  *  POST / Redirect / GET
@@ -66,6 +90,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         // teto de 240 meses (20 anos): sem limite, um valor absurdo
         // vindo do formulario geraria data invalida no strtotime
         $meses    = max(1, min(240, (int)($_POST['meses'] ?? 12)));
+        // vem como "1.234,56" do formulario brasileiro
+        $valorTxt = str_replace(['.', ','], ['', '.'],
+                                trim($_POST['valor'] ?? ''));
+        $valorLic = $valorTxt === '' ? null : max(0, (float)$valorTxt);
         $carencia = (int)($_POST['carencia'] ?? 15);
         $mods     = $_POST['modulos'] ?? [];
         // destino explicito: evita o engano de deixar o cliente vazio
@@ -136,6 +164,29 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                     $licId = (int)db()->lastInsertId();
                     $geradas[] = $chave;
                     $idsEmitidos[] = $licId;
+
+                    // Cada emissao e um evento de receita com data
+                    // propria. Guardar o valor so na licenca nao
+                    // serviria: uma licenca renovada tres vezes teria
+                    // um valor e tres receitas em meses diferentes.
+                    if ($valorLic !== null) {
+                        db()->prepare(
+                          'UPDATE licencas SET valor=? WHERE id=?')
+                          ->execute([$valorLic, $licId]);
+
+                        db()->prepare(
+                          'INSERT INTO financeiro_mov
+                             (licenca_id, tipo, valor, valor_tabela, meses,
+                              cliente_id, revendedor_id, produto, tier,
+                              competencia, criado_por)
+                           VALUES (?,"emissao",?,?,?,?,?,?,?,
+                                   DATE_FORMAT(NOW(),"%Y-%m"),?)')
+                          ->execute([$licId, $valorLic,
+                                     $t['preco_base'] ?? null, $meses,
+                                     $cliId ?: null, $revId ?: null,
+                                     $t['produto_codigo'], $t['tier_codigo'],
+                                     $u['id']]);
+                    }
 
                     log_acao_painel(
                         $licId, $chave, null, 'emitir', 'ok',
@@ -219,7 +270,6 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='revogar') {
             $msg = 'Para o motivo "Outro", descreva na observacao.';
             $tipo = 'erro';
         } else {
-            $u = usuario_logado();
             db()->prepare(
               'UPDATE licencas
                   SET status="revogada", motivo_revogacao=?, obs_revogacao=?,
@@ -317,6 +367,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
     if (csrf_valido()) {
         $id    = (int)$_POST['id'];
         $meses = max(1, min(60, (int)($_POST['meses_renov'] ?? 12)));
+        $vTxt  = str_replace(['.', ','], ['', '.'],
+                             trim($_POST['valor_renov'] ?? ''));
+        $vRenov = $vTxt === '' ? null : max(0, (float)$vTxt);
         $u     = usuario_logado();
 
         $lr = db()->prepare(
@@ -342,9 +395,24 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                       renovacoes=renovacoes+1, renovada_em=NOW()
                 WHERE id=?')->execute([$novo, $id]);
 
+            if ($vRenov !== null) {
+                db()->prepare('UPDATE licencas SET valor=? WHERE id=?')
+                    ->execute([$vRenov, $id]);
+                db()->prepare(
+                  'INSERT INTO financeiro_mov
+                     (licenca_id, tipo, valor, meses, cliente_id,
+                      revendedor_id, produto, tier, competencia, criado_por)
+                   SELECT ?, "renovacao", ?, ?, l.cliente_id, l.revendedor_id,
+                          ?, ?, DATE_FORMAT(NOW(),"%Y-%m"), ?
+                     FROM licencas l WHERE l.id = ?')
+                  ->execute([$id, $vRenov, $meses, $lrow['pc'], $lrow['tc'],
+                             $u['id'], $id]);
+            }
+
             log_acao_painel($id, $lrow['chave'], null, 'renovar', 'ok',
                 $u['id'], $u['nome'] ?? null, $lrow['pc'], $lrow['tc'],
-                "de {$lrow['expira_em']} para $novo (+{$meses}m)");
+                "de {$lrow['expira_em']} para $novo (+{$meses}m)"
+                . ($vRenov !== null ? ' - ' . moeda($vRenov) : ''));
 
             pos_acao('Licença renovada até '.date('d/m/Y', strtotime($novo))
                 . '. O cliente recebe a nova validade na próxima '
@@ -383,11 +451,11 @@ $modulosCat = db()->query(
     WHERE m.ativo=1
     ORDER BY COALESCE(p.codigo,""), m.ordem, m.codigo')->fetchAll();
 $tiers = db()->query(
-  'SELECT id,produto_id,codigo,nome,nivel FROM tiers WHERE ativo=1
+  'SELECT id,produto_id,codigo,nome,nivel,preco_base FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
 
 $revendedores = db()->query(
-  "SELECT id, nome, empresa, nome_fantasia FROM usuarios
+  "SELECT id, nome, empresa, nome_fantasia, desconto_revenda FROM usuarios
     WHERE papel='revendedor' AND ativo=1
     ORDER BY COALESCE(nome_fantasia,empresa,nome)")->fetchAll();
 
@@ -752,11 +820,20 @@ abre_pagina('Licenças', 'licencas');
         <select name="tier_id" id="tier_id" required disabled>
           <option value="">— escolha o software —</option>
           <?php foreach ($tiers as $t): ?>
-            <option value="<?= $t['id'] ?>" data-produto="<?= $t['produto_id'] ?>">
+            <option value="<?= $t['id'] ?>" data-produto="<?= $t['produto_id'] ?>"
+                    data-preco="<?= $t['preco_base'] !== null
+                                    ? (float)$t['preco_base'] : '' ?>">
               nível <?= (int)$t['nivel'] ?> · <?= e($t['nome']) ?>
             </option>
           <?php endforeach; ?>
         </select>
+      </div>
+      <div>
+        <label>Valor cobrado (R$)</label>
+        <input name="valor" id="fValor" inputmode="decimal"
+               placeholder="deixe vazio se não for registrar">
+        <span class="subtitulo" id="dicaValor"
+              style="margin:4px 0 0;display:block;font-size:11px"></span>
       </div>
       <div>
         <label>Carência (dias após expirar)</label>
@@ -775,8 +852,12 @@ abre_pagina('Licenças', 'licencas');
       <select name="revendedor_id" id="selRevendedor">
         <option value="">— selecione o revendedor —</option>
         <?php foreach ($revendedores as $r): ?>
-          <option value="<?= $r['id'] ?>">
+          <option value="<?= $r['id'] ?>"
+                  data-desconto="<?= (float)($r['desconto_revenda'] ?? 0) ?>">
             <?= e($r['nome_fantasia'] ?: ($r['empresa'] ?: $r['nome'])) ?>
+            <?php if (($r['desconto_revenda'] ?? 0) > 0): ?>
+              (-<?= rtrim(rtrim(number_format((float)$r['desconto_revenda'],1,',','.'),'0'),',') ?>%)
+            <?php endif; ?>
           </option>
         <?php endforeach; ?>
       </select>
@@ -1130,6 +1211,12 @@ abre_pagina('Licenças', 'licencas');
                   <input type="hidden" name="acao" value="renovar">
                   <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                   <input type="hidden" name="id" value="<?= $l['id'] ?>">
+                  <div><label style="font-size:11px">Valor (R$)</label>
+                    <input name="valor_renov" inputmode="decimal"
+                           style="width:90px"
+                           placeholder="<?= $l['valor']
+                               ? number_format((float)$l['valor'],2,',','.')
+                               : 'opcional' ?>"></div>
                   <div><label style="font-size:11px">Renovar por</label>
                     <select name="meses_renov">
                       <?php foreach ([6  => '6 meses',
@@ -1315,6 +1402,55 @@ abre_pagina('Licenças', 'licencas');
 
 <?= script_copiar_licenca() ?>
 <script>
+/* Sugere o valor a partir da tabela: preco do tier proporcional aos
+   meses, menos o desconto do revendedor quando a venda e por ele.
+   O campo continua editavel - preco de software raramente sai redondo
+   da tabela, e travar faria o operador registrar errado para salvar. */
+function sugerirValor() {
+  var tier  = document.getElementById('tier_id');
+  var meses = document.querySelector('select[name=meses]');
+  var campo = document.getElementById('fValor');
+  var dica  = document.getElementById('dicaValor');
+  if (!tier || !meses || !campo) return;
+
+  var op = tier.options[tier.selectedIndex];
+  var base = op ? parseFloat(op.getAttribute('data-preco')) : NaN;
+
+  if (!base || isNaN(base)) {
+    dica.textContent = 'Sem preço de tabela para este tipo.';
+    return;
+  }
+
+  var v = base * (parseInt(meses.value, 10) / 12);
+
+  // desconto so quando o destino e revenda
+  var destino = document.querySelector('input[name=destino]:checked');
+  var desc = 0;
+  if (destino && destino.value === 'revenda') {
+    var rev = document.getElementById('selRevendedor');
+    var ro = rev && rev.selectedIndex >= 0 ? rev.options[rev.selectedIndex] : null;
+    desc = ro ? parseFloat(ro.getAttribute('data-desconto') || 0) : 0;
+    if (desc > 0) v = v * (1 - desc / 100);
+  }
+
+  var fmt = v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  dica.textContent = 'Tabela: ' + fmt + (desc > 0 ? ' (-' + desc + '% revenda)' : '');
+  if (!campo.value) campo.value = fmt;
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  ['tier_id', 'produto_sel', 'selRevendedor'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', sugerirValor);
+  });
+  var m = document.querySelector('select[name=meses]');
+  if (m) m.addEventListener('change', sugerirValor);
+  document.querySelectorAll('input[name=destino]').forEach(function (r) {
+    r.addEventListener('change', sugerirValor);
+  });
+  sugerirValor();
+});
+
 function filtrarPorProduto() {
   var prod = document.getElementById('produto_sel');
   var tier = document.getElementById('tier_id');

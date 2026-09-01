@@ -81,10 +81,14 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             $niv  = max(1, min(99, (int)($_POST['nivel'] ?? 1)));
             if (!$pid || $cod==='' || $nome==='')
                 throw new RuntimeException('Preencha software, código e nome.');
+            $preco = str_replace(['.', ','], ['', '.'],
+                                 trim($_POST['preco_base'] ?? ''));
             db()->prepare(
-              'INSERT INTO tiers (produto_id,codigo,nome,descricao,nivel,ativo)
-               VALUES (?,?,?,?,?,1)')
-              ->execute([$pid,$cod,$nome,(trim($_POST['descricao'] ?? '') ?: null),$niv]);
+              'INSERT INTO tiers
+                 (produto_id,codigo,nome,descricao,nivel,preco_base,ativo)
+               VALUES (?,?,?,?,?,?,1)')
+              ->execute([$pid,$cod,$nome,(trim($_POST['descricao'] ?? '') ?: null),
+                         $niv, ($preco === '' ? null : (float)$preco)]);
             $msg="Tipo \"$nome\" cadastrado."; $tipo='ok';
         }
         elseif ($ac === 'tier_editar') {
@@ -92,16 +96,27 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             $nome = trim($_POST['nome'] ?? '');
             $niv  = max(1, min(99, (int)($_POST['nivel'] ?? 1)));
             if ($nome==='') throw new RuntimeException('O nome não pode ficar vazio.');
+            // O preco SEMPRE pode mudar, mesmo com licencas emitidas:
+            // e tabela de referencia para as proximas vendas, nao um
+            // valor que ja foi cobrado. O que foi cobrado esta em
+            // financeiro_mov e nao e alterado por aqui.
+            $preco = str_replace(['.', ','], ['', '.'],
+                                 trim($_POST['preco_base'] ?? ''));
+            $preco = $preco === '' ? null : (float)$preco;
+
             if (em_uso_tier($id) === 0) {
                 $cod = strtolower(preg_replace('/[^a-zA-Z0-9_]/','', $_POST['codigo'] ?? ''));
                 db()->prepare(
-                  'UPDATE tiers SET codigo=?, nome=?, descricao=?, nivel=? WHERE id=?')
-                  ->execute([$cod,$nome,(trim($_POST['descricao'] ?? '') ?: null),$niv,$id]);
+                  'UPDATE tiers SET codigo=?, nome=?, descricao=?, nivel=?,
+                          preco_base=? WHERE id=?')
+                  ->execute([$cod,$nome,(trim($_POST['descricao'] ?? '') ?: null),
+                             $niv,$preco,$id]);
             } else {
-                // nivel tambem fica travado: mudar reclassifica licencas
-                // ja emitidas sem o cliente saber
-                db()->prepare('UPDATE tiers SET nome=?, descricao=? WHERE id=?')
-                    ->execute([$nome,(trim($_POST['descricao'] ?? '') ?: null),$id]);
+                // nivel travado: mudar reclassifica licencas ja emitidas
+                db()->prepare(
+                  'UPDATE tiers SET nome=?, descricao=?, preco_base=? WHERE id=?')
+                  ->execute([$nome,(trim($_POST['descricao'] ?? '') ?: null),
+                             $preco,$id]);
             }
             $msg='Tipo atualizado.'; $tipo='ok';
         }
@@ -283,7 +298,7 @@ abre_pagina('Catálogo', 'catalogo');
     <form method="post">
       <input type="hidden" name="acao" value="tier_novo">
       <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-      <div style="display:grid;grid-template-columns:1fr 1fr 2fr 1fr 2fr;gap:14px">
+      <div style="display:grid;grid-template-columns:1fr 1fr 2fr 1fr 1fr 2fr;gap:14px">
         <div><label>Software *</label>
           <select name="produto_id" required>
             <option value="">— selecione —</option>
@@ -295,6 +310,8 @@ abre_pagina('Catálogo', 'catalogo');
         <div><label>Nome *</label><input name="nome" required placeholder="Premium"></div>
         <div><label>Nível *</label>
           <input name="nivel" type="number" min="1" max="99" value="1" required></div>
+        <div><label>Preço anual (R$)</label>
+          <input name="preco_base" inputmode="decimal" placeholder="0,00"></div>
         <div><label>Descrição</label><input name="descricao"></div>
       </div>
       <p class="subtitulo" style="margin:8px 0 0;font-size:11px">
@@ -311,6 +328,7 @@ abre_pagina('Catálogo', 'catalogo');
 
   <table style="margin-top:14px">
     <thead><tr><th>Software</th><th>Nível</th><th>Código</th><th>Nome</th>
+      <th style="text-align:right">Preço anual</th>
       <th>Licenças</th><th>Situação</th><th></th></tr></thead>
     <tbody>
     <?php foreach ($tiers as $t): ?>
@@ -323,6 +341,10 @@ abre_pagina('Catálogo', 'catalogo');
             <br><span style="font-size:11px;color:var(--texto-2)">
               <?= e($t['descricao']) ?></span>
           <?php endif; ?></td>
+        <td class="mono" style="text-align:right">
+          <?= $t['preco_base'] !== null
+              ? 'R$ ' . number_format((float)$t['preco_base'],2,',','.')
+              : '<span style="color:var(--texto-2)">—</span>' ?></td>
         <td class="mono"><?= (int)$t['n_lic'] ?></td>
         <td><span class="badge <?= $t['ativo']?'ativa':'expirada' ?>">
           <?= $t['ativo']?'ativo':'inativo' ?></span></td>
@@ -338,12 +360,12 @@ abre_pagina('Catálogo', 'catalogo');
         </td>
       </tr>
       <tr id="tedt<?= $t['id'] ?>" style="display:none">
-        <td colspan="7" style="background:var(--bg-3)">
+        <td colspan="8" style="background:var(--bg-3)">
           <form method="post">
             <input type="hidden" name="acao" value="tier_editar">
             <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
             <input type="hidden" name="id" value="<?= $t['id'] ?>">
-            <div style="display:grid;grid-template-columns:1fr 2fr 1fr 3fr;gap:14px">
+            <div style="display:grid;grid-template-columns:1fr 2fr 1fr 1fr 3fr;gap:14px">
               <div><label>Código
                   <?php if ((int)$t['n_lic']>0): ?>
                     <span style="text-transform:none;color:var(--texto-2)">· travado</span>
@@ -359,6 +381,10 @@ abre_pagina('Catálogo', 'catalogo');
                 <input name="nivel" type="number" min="1" max="99"
                        value="<?= (int)$t['nivel'] ?>"
                        <?= (int)$t['n_lic']>0 ? 'readonly' : '' ?>></div>
+              <div><label>Preço anual (R$)</label>
+                <input name="preco_base" inputmode="decimal"
+                       value="<?= $t['preco_base'] !== null
+                           ? number_format((float)$t['preco_base'],2,',','.') : '' ?>"></div>
               <div><label>Descrição</label>
                 <input name="descricao" value="<?= e($t['descricao'] ?? '') ?>"></div>
             </div>
@@ -366,6 +392,8 @@ abre_pagina('Catálogo', 'catalogo');
               <p class="subtitulo" style="margin:8px 0 0;font-size:11px">
                 <?= (int)$t['n_lic'] ?> licença(s) usam este tipo. Mudar o
                 nível reclassificaria o que esses clientes já contrataram.
+                O preço pode mudar: vale para as próximas vendas, não
+                altera o que já foi cobrado.
               </p>
             <?php endif; ?>
             <div style="margin-top:10px">

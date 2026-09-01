@@ -150,7 +150,7 @@ function resolver_tier(int $tierId): array {
         'SELECT p.id     AS produto_id,
                 p.codigo AS produto_codigo, p.nome AS produto_nome,
                 t.codigo AS tier_codigo,    t.nome AS tier_nome,
-                t.nivel  AS nivel
+                t.nivel  AS nivel,          t.preco_base AS preco_base
            FROM tiers t
            JOIN produtos p ON p.id = t.produto_id
           WHERE t.id = ? AND t.ativo = 1 AND p.ativo = 1');

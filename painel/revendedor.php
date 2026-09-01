@@ -33,7 +33,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             db()->prepare(
               'UPDATE usuarios
                   SET nome=?, empresa=?, nome_fantasia=?, cnpj=?, telefone=?,
-                      municipio=?, uf=?, observacao=?, limite_estoque=?
+                      municipio=?, uf=?, observacao=?, limite_estoque=?,
+                      desconto_revenda=?
                 WHERE id=? AND papel="revendedor"')
               ->execute([$nome,
                 (trim($_POST['empresa'] ?? '') ?: null),
@@ -44,6 +45,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
                 (strtoupper(substr(trim($_POST['uf'] ?? ''),0,2)) ?: null),
                 (trim($_POST['observacao'] ?? '') ?: null),
                 ((int)($_POST['limite_estoque'] ?? 0) ?: null),
+                // percentual: aceita "12,5" do formulario brasileiro
+                max(0, min(99.99, (float)str_replace(',', '.',
+                    trim($_POST['desconto_revenda'] ?? '0')))),
                 $id]);
             $str->execute([$id]); $rev = $str->fetch();
             $msg='Cadastro atualizado.'; $tipo='ok';
@@ -253,7 +257,13 @@ abre_pagina('Revendedor', 'revendedores');
       <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:16px;margin-top:12px">
         <div><label>Responsável *</label>
           <input name="nome" required value="<?= e($rev['nome']) ?>"></div>
-        <div><label>Limite de estoque</label>
+        <div><label>Desconto de revenda (%)</label>
+        <input name="desconto_revenda" inputmode="decimal"
+               value="<?= rtrim(rtrim(number_format(
+                   (float)($rev['desconto_revenda'] ?? 0),2,',','.'),'0'),',') ?>">
+        <span class="subtitulo" style="margin:4px 0 0;display:block;font-size:11px">
+          abatido do preço de tabela ao emitir para ele</span></div>
+      <div><label>Limite de estoque</label>
           <input name="limite_estoque" type="number" min="0"
                  value="<?= $rev['limite_estoque'] !== null ? (int)$rev['limite_estoque'] : '' ?>"></div>
         <div><label>Observação</label>
