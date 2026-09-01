@@ -3,7 +3,13 @@
  * =====================================================================
  *  API - Ativacao ONLINE  (v2: multi-produto)
  * =====================================================================
- *  O Delphi faz POST aqui com:  { "chave": "...", "fingerprint": "..." }
+ *  O Delphi faz POST aqui com:  { "chave": "...", "fingerprint": "...",
+ *                                 "cadastro": { ... } }
+ *
+ *  O bloco "cadastro" so vem quando a licenca ainda nao tem cliente -
+ *  o caso do revendedor que repassa a chave sem usar o painel. O
+ *  cliente final preenche os dados no proprio Total Scale e o servidor
+ *  cria o cadastro ja vinculado a licenca e ao revendedor que vendeu.
  *  Retorna JSON:
  *     sucesso: { "ok": true, "licenca": "<base64 assinada>",
  *                "produto": "...", "tier": "...", "nivel": N,
@@ -38,7 +44,7 @@ try {
                 p.codigo AS produto_codigo,
                 t.codigo AS tier_codigo, t.nivel AS tier_nivel
            FROM licencas l
-           JOIN clientes c ON c.id = l.cliente_id
+           LEFT JOIN clientes c ON c.id = l.cliente_id
            LEFT JOIN produtos p ON p.id = l.produto_id
            LEFT JOIN tiers    t ON t.id = l.tier_id
           WHERE l.chave = ? LIMIT 1');
@@ -70,6 +76,158 @@ try {
                  'ja ativada em outra maquina');
         responde(['ok' => false,
                   'erro' => 'Esta licenca ja esta em uso em outra maquina. Contate o suporte.'], 403);
+    }
+
+
+    /* =================================================================
+     *  AUTOCADASTRO DO CLIENTE FINAL
+     * =================================================================
+     *  Licenca sem cliente = repassada pelo revendedor sem passar pelo
+     *  painel. O Total Scale exige o registro da empresa antes de
+     *  ativar, e e aqui que ele chega.
+     * ================================================================= */
+    if (empty($lic['cliente_id'])) {
+        $cad = $body['cadastro'] ?? null;
+
+        // sem os dados, devolve o pedido em vez de ativar. O Delphi
+        // reconhece 'precisa_cadastro' e abre o formulario.
+        if (!is_array($cad) || trim($cad['cnpj'] ?? '') === '') {
+            log_acao($lic['id'], $chave, $fp, 'ativar_online', 'negado',
+                     'aguardando cadastro do cliente final');
+            responde([
+                'ok' => false,
+                'precisa_cadastro' => true,
+                'erro' => 'Esta licenca ainda nao esta vinculada a uma empresa. '
+                        . 'Informe os dados para concluir a ativacao.'
+            ], 409);
+        }
+
+        $cnpj = preg_replace('/\D/', '', $cad['cnpj']);
+        if (strlen($cnpj) !== 14 || !cnpj_dv_valido($cnpj)) {
+            responde(['ok' => false, 'precisa_cadastro' => true,
+                      'erro' => 'CNPJ invalido. Confira os numeros digitados.'], 400);
+        }
+
+        $razao    = mb_substr(trim($cad['razao_social'] ?? ''), 0, 160);
+        $contato  = mb_substr(trim($cad['contato']  ?? ''), 0, 120);
+        $telefone = mb_substr(trim($cad['telefone'] ?? ''), 0, 40);
+        $email    = mb_strtolower(mb_substr(trim($cad['email'] ?? ''), 0, 160));
+        $munic    = mb_substr(trim($cad['municipio'] ?? ''), 0, 120);
+        $uf       = strtoupper(mb_substr(trim($cad['uf'] ?? ''), 0, 2));
+
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) $email = '';
+
+        /* --- confere na Receita ---------------------------------------
+         * A razao social vem de la, nao do que o cliente digitou. Se o
+         * servico estiver fora, ACEITA o que veio e marca para
+         * conferir: o cliente nao pode ficar parado por um servico
+         * que nao e nosso.
+         * ------------------------------------------------------------- */
+        $receitaOk = false;
+        $dadosReceita = consultar_receita($cnpj);
+        if ($dadosReceita) {
+            $receitaOk = true;
+            $razao = $dadosReceita['razao_social'] ?: $razao;
+            if ($munic === '') $munic = $dadosReceita['municipio'] ?? '';
+            if ($uf    === '') $uf    = $dadosReceita['uf'] ?? '';
+        }
+        if ($razao === '') $razao = 'CNPJ ' . $cnpj;
+
+        /* --- ja existe cliente com este CNPJ? -------------------------
+         * Reaproveita sempre, nunca duplica. Mas se o cadastro existente
+         * pertence a OUTRO revendedor - ou era venda direta - marca
+         * como conflito para voce decidir. Reatribuir sozinho seria
+         * mexer na carteira de alguem sem avisar.
+         * ------------------------------------------------------------- */
+        $stC = db()->prepare(
+          "SELECT id, razao_social, revendedor_id
+             FROM clientes
+            WHERE REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?
+            LIMIT 1");
+        $stC->execute([$cnpj]);
+        $existente = $stC->fetch();
+
+        $revLic = $lic['revendedor_id'] ?? null;
+        $obs = '';
+
+        if ($existente) {
+            $cliId = (int)$existente['id'];
+            $revAnterior = $existente['revendedor_id'] ?? null;
+
+            if ((int)$revAnterior !== (int)$revLic) {
+                $resultado = 'conflito';
+                $obs = $revAnterior
+                     ? 'cadastro pertencia a outro revendedor (id ' . $revAnterior . ')'
+                     : 'cadastro era de venda direta';
+            } else {
+                $resultado = 'reaproveitado';
+            }
+
+            // completa o que estiver em branco, sem sobrescrever o que
+            // ja foi conferido por voce
+            db()->prepare(
+              'UPDATE clientes
+                  SET telefone = COALESCE(NULLIF(telefone,""), ?),
+                      email    = COALESCE(NULLIF(email,""), ?),
+                      municipio= COALESCE(NULLIF(municipio,""), ?),
+                      uf       = COALESCE(NULLIF(uf,""), ?)
+                WHERE id = ?')
+              ->execute([$telefone ?: null, $email ?: null,
+                         $munic ?: null, $uf ?: null, $cliId]);
+        } else {
+            $resultado = 'criado';
+            db()->prepare(
+              'INSERT INTO clientes
+                 (razao_social, cnpj, contato, telefone, email, municipio, uf,
+                  revendedor_id, origem_cadastro, conferido, dados_receita,
+                  autocadastro_em)
+               VALUES (?,?,?,?,?,?,?,?,"autocadastro",0,?,NOW())')
+              ->execute([$razao, $cnpj, ($contato ?: null), ($telefone ?: null),
+                         ($email ?: null), ($munic ?: null), ($uf ?: null),
+                         $revLic, $receitaOk ? 1 : 0]);
+            $cliId = (int)db()->lastInsertId();
+
+            // contato principal, para a licenca chegar por e-mail
+            if ($contato !== '' || $email !== '' || $telefone !== '') {
+                try {
+                    db()->prepare(
+                      'INSERT INTO cliente_contatos
+                         (cliente_id, nome, telefone, email, principal)
+                       VALUES (?,?,?,?,1)')
+                      ->execute([$cliId, ($contato ?: 'Contato'),
+                                 ($telefone ?: null), ($email ?: null)]);
+                } catch (Throwable $e) { /* tabela pode nao existir */ }
+            }
+        }
+
+        // vincula a licenca ao cliente
+        db()->prepare('UPDATE licencas SET cliente_id=? WHERE id=?')
+            ->execute([$cliId, $lic['id']]);
+
+        // registra na fila de conferencia SEMPRE - inclusive quando o
+        // cadastro ja existia. Sem isto, um CNPJ conhecido entraria em
+        // silencio e voce nunca saberia que ele passou a comprar de
+        // revenda.
+        db()->prepare(
+          'INSERT INTO autocadastros
+             (licenca_id, cliente_id, revendedor_id, cnpj_informado,
+              razao_informada, contato_informado, telefone_informado,
+              email_informado, municipio_informado, uf_informada,
+              resultado, receita_ok, observacao, fingerprint, ip)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+          ->execute([$lic['id'], $cliId, $revLic, $cnpj,
+                     mb_substr(trim($cad['razao_social'] ?? ''), 0, 160),
+                     $contato, $telefone, $email, $munic, $uf,
+                     $resultado, $receitaOk ? 1 : 0, ($obs ?: null),
+                     $fp, $_SERVER['REMOTE_ADDR'] ?? null]);
+
+        log_acao($lic['id'], $chave, $fp, 'autocadastro', 'ok',
+                 $resultado . ': ' . $razao . ' (' . $cnpj . ')');
+
+        // recarrega para a assinatura sair com o nome certo
+        $lic['cliente_id']   = $cliId;
+        $lic['razao_social'] = $razao;
+        $lic['cnpj']         = $cnpj;
     }
 
     // --- ativa (grava fingerprint na primeira vez) -------------------
@@ -111,7 +269,6 @@ try {
         ]);
     }
 
-    registra_maquina_ativacao($fp, $lic['id'], $lic['cliente_id']);
     log_acao($lic['id'], $chave, $fp, 'ativar_online', 'ok',
              trim(($lic['produto_codigo'] ?? '').' '.($lic['tier_codigo'] ?? '')));
     responde([
@@ -129,40 +286,4 @@ try {
 } catch (Throwable $e) {
     log_acao(null, $chave, $fp, 'ativar_online', 'erro', $e->getMessage());
     responde(['ok' => false, 'erro' => 'Erro interno. Tente novamente mais tarde.'], 500);
-}
-
-/**
- * Cria/atualiza a maquina no momento da ativacao.
- * A ativacao so recebe { chave, fingerprint }, entao maq_nome/usuario/so
- * ficam NULL e sao preenchidos depois pelo ping.php. Os COALESCE abaixo
- * garantem que uma ativacao NUNCA apague o que os pings ja coletaram.
- */
-function registra_maquina_ativacao($fp, $licId, $cliId, $origem = 'licenca')
-{
-    $fp = trim((string)$fp);
-    if ($fp === '' || preg_match('/^TS[0-9A-Z]{2}-/i', $fp)) {
-        return false;   // vazio, ou uma CHAVE colada no campo errado
-    }
-    try {
-        $st = db()->prepare(
-            'INSERT INTO maquinas
-               (fingerprint, licenca_id, cliente_id, maq_nome, maq_usuario,
-                maq_so, origem, primeiro_acesso, ultimo_acesso, aberturas,
-                ip_ultimo)
-             VALUES (?,?,?, NULL, NULL, NULL, ?, NOW(), NOW(), 0, ?)
-             ON DUPLICATE KEY UPDATE
-               licenca_id    = COALESCE(VALUES(licenca_id), licenca_id),
-               cliente_id    = COALESCE(VALUES(cliente_id), cliente_id),
-               maq_nome      = COALESCE(maq_nome,    VALUES(maq_nome)),
-               maq_usuario   = COALESCE(maq_usuario, VALUES(maq_usuario)),
-               maq_so        = COALESCE(maq_so,      VALUES(maq_so)),
-               origem        = COALESCE(VALUES(origem), origem),
-               ultimo_acesso = NOW(),
-               ip_ultimo     = VALUES(ip_ultimo)');
-        $st->execute([$fp, $licId, $cliId, $origem,
-                      $_SERVER['REMOTE_ADDR'] ?? null]);
-        return true;
-    } catch (Throwable $e) {
-        return false;   // nunca deixa o registro derrubar uma ativacao valida
-    }
 }

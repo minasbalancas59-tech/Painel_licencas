@@ -199,3 +199,76 @@ function log_acao_painel(?int $licencaId, ?string $chave, ?string $fp,
         $acao, $resultado, mb_substr($detalhe, 0, 255)
     ]);
 }
+
+/* =====================================================================
+ *  Apoio ao autocadastro do cliente final
+ * ===================================================================== */
+
+/**
+ * Valida o digito verificador do CNPJ.
+ * Evita cadastro criado a partir de numero digitado errado - que
+ * depois vira cliente fantasma na base.
+ */
+function cnpj_dv_valido(string $c): bool {
+    if (strlen($c) !== 14) return false;
+    if (preg_match('/^(\d)\1{13}$/', $c)) return false;
+    foreach ([12, 13] as $pos) {
+        $soma = 0;
+        $peso = ($pos === 12) ? 5 : 6;
+        for ($i = 0; $i < $pos; $i++) {
+            $soma += (int)$c[$i] * $peso;
+            $peso = ($peso === 2) ? 9 : $peso - 1;
+        }
+        $dv = $soma % 11;
+        $dv = ($dv < 2) ? 0 : 11 - $dv;
+        if ((int)$c[$pos] !== $dv) return false;
+    }
+    return true;
+}
+
+/**
+ * Consulta o CNPJ na BrasilAPI. Devolve null se nao conseguir.
+ *
+ * TIMEOUT CURTO de proposito: isto roda no meio de uma ativacao, com o
+ * cliente esperando na frente da balanca. Melhor cadastrar com o que
+ * ele digitou e conferir depois do que deixa-lo parado esperando um
+ * servico que nao e nosso.
+ *
+ * O cache evita bater na API a cada ativacao do mesmo CNPJ.
+ */
+function consultar_receita(string $cnpj): ?array {
+    $dir = sys_get_temp_dir() . '/cnpj_cache';
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+    $arq = "$dir/$cnpj.json";
+
+    $bruto = null;
+    if (is_file($arq) && (time() - filemtime($arq)) < 30 * 24 * 3600) {
+        $bruto = file_get_contents($arq);
+    } else {
+        $ch = curl_init("https://brasilapi.com.br/api/cnpj/v1/$cnpj");
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 6,
+            CURLOPT_CONNECTTIMEOUT => 3,
+            CURLOPT_USERAGENT      => 'PainelLicencas/1.0',
+        ]);
+        $r    = curl_exec($ch);
+        $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+        if ($r !== false && $http === 200) {
+            $bruto = $r;
+            @file_put_contents($arq, $r);
+        }
+    }
+
+    if ($bruto === null) return null;
+    $d = json_decode($bruto, true);
+    if (!is_array($d) || empty($d['razao_social'])) return null;
+
+    return [
+        'razao_social'  => $d['razao_social'],
+        'nome_fantasia' => $d['nome_fantasia'] ?? '',
+        'municipio'     => $d['municipio'] ?? '',
+        'uf'            => $d['uf'] ?? '',
+    ];
+}

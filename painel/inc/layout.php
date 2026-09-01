@@ -41,6 +41,9 @@ function menu_estrutura(string $papel): array {
              'pagina'=>'clientes',     'desc'=>'Cadastro, contatos e uso'],
             ['rotulo'=>'Revendedores', 'url'=>'revendedores.php',
              'pagina'=>'revendedores', 'desc'=>'Parceiros e estoque deles'],
+            ['rotulo'=>'Autocadastros','url'=>'autocadastros.php',
+             'pagina'=>'autocadastros','desc'=>'Clientes registrados na ativação',
+             'contador'=>'autocadastros_pendentes'],
         ]],
 
         ['rotulo'=>'Licenças', 'itens'=>[
@@ -93,6 +96,19 @@ function trocas_pendentes(): int {
         $n = (int)db()->query(
           "SELECT COUNT(*) FROM trocas_cliente WHERE status='pendente'")
           ->fetchColumn();
+    } catch (Throwable $e) { $n = 0; }
+    return $n;
+}
+
+/** Quantos autocadastros aguardam conferência. Vira bolinha no menu. */
+function autocadastros_pendentes(): int {
+    static $n = null;
+    if ($n !== null) return $n;
+    $u = usuario_logado();
+    if (($u['papel'] ?? '') !== 'admin') return $n = 0;
+    try {
+        $n = (int)db()->query(
+          'SELECT COUNT(*) FROM autocadastros WHERE revisado = 0')->fetchColumn();
     } catch (Throwable $e) { $n = 0; }
     return $n;
 }

@@ -469,6 +469,19 @@ function fmtMesCli(string $am): string {
     return ($m[$mm] ?? $mm) . '/' . substr($a, 2);
 }
 
+/* Origem do cadastro: veio do painel ou do próprio cliente ao ativar.
+   Importa porque dados de autocadastro não passaram por conferência. */
+$auto = null;
+try {
+    $stA = db()->prepare(
+      "SELECT a.*, COALESCE(u.nome_fantasia, u.empresa, u.nome) AS rev_nome
+         FROM autocadastros a
+         LEFT JOIN usuarios u ON u.id = a.revendedor_id
+        WHERE a.cliente_id = ? ORDER BY a.id DESC LIMIT 1");
+    $stA->execute([$id]);
+    $auto = $stA->fetch() ?: null;
+} catch (Throwable $e) { /* migracao 19 ainda nao aplicada */ }
+
 abre_pagina('Cliente', 'clientes');
 ?>
 <p class="subtitulo" style="margin-bottom:4px"><a href="clientes.php">‹ Clientes</a></p>
@@ -536,6 +549,22 @@ abre_pagina('Cliente', 'clientes');
 <?php endforeach; ?>
 
 <?php if ($msgC): ?><div class="aviso <?= $tipoC ?>"><?= e($msgC) ?></div><?php endif; ?>
+
+<?php if ($auto): ?>
+  <div class="card" style="border-left:3px solid <?= $auto['revisado']
+       ? 'var(--verde)' : 'var(--ambar)' ?>;padding:12px 16px">
+    <p style="margin:0;font-size:13px">
+      <b>Cadastrado pelo próprio cliente</b> ao ativar o software em
+      <?= date('d/m/Y', strtotime($auto['criado_em'])) ?>,
+      vendido por <b><?= e($auto['rev_nome'] ?: 'venda direta') ?></b>.
+      <?php if (!$auto['revisado']): ?>
+        <br><span style="color:var(--ambar)">Os dados ainda não foram
+        conferidos.</span>
+        <a href="autocadastros.php">Conferir agora</a>
+      <?php endif; ?>
+    </p>
+  </div>
+<?php endif; ?>
 
 <div class="card">
   <div style="display:flex;justify-content:space-between;align-items:center">
