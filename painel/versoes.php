@@ -44,6 +44,21 @@ function base_url(): string {
     return ($https ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? '');
 }
 
+/* O envio do instalador vem por XMLHttpRequest para o navegador poder
+   mostrar o progresso. Nesse caso a resposta é JSON em vez de
+   redirecionamento — a página não recarrega. */
+$ajax = (($_SERVER['HTTP_X_REQUESTED_WITH'] ?? '') === 'XMLHttpRequest');
+
+function resp_json(array $d, int $http = 200): void {
+    http_response_code($http);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode($d, JSON_UNESCAPED_UNICODE);
+    exit;
+}
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !csrf_valido() && $ajax)
+    resp_json(['ok' => false, 'msg' => 'Sessão expirada. Recarregue a página.'], 403);
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && csrf_valido()) {
     $ac = $_POST['acao'] ?? '';
 
@@ -143,12 +158,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && csrf_valido()) {
                 $n++;
             }
 
-            $_SESSION['flashV'] = [
-                'Versão ' . $versao . ' publicada.'
-                . ($marcar ? ' Marcada como atual.' : '')
-                . ($n ? " $n versão(ões) antiga(s) removida(s)." : ''),
-                'ok'];
+            $txt = 'Versão ' . $versao . ' publicada.'
+                 . ($marcar ? ' Marcada como atual.' : '')
+                 . ($n ? " $n versão(ões) antiga(s) removida(s)." : '');
+
+            if ($ajax) resp_json(['ok' => true, 'msg' => $txt]);
+            $_SESSION['flashV'] = [$txt, 'ok'];
         } catch (Throwable $e) {
+            if ($ajax) resp_json(['ok' => false, 'msg' => $e->getMessage()], 400);
             $_SESSION['flashV'] = [$e->getMessage(), 'erro'];
         }
         header('Location: versoes.php'); exit;
@@ -303,11 +320,31 @@ abre_pagina('Versões', 'versoes');
     </label>
 
     <div style="margin-top:16px">
-      <button class="btn">Publicar</button>
-      <span class="subtitulo" style="margin-left:12px">
+      <button class="btn" id="btnPublicar">Publicar</button>
+      <span class="subtitulo" id="avisoEnvio" style="margin-left:12px">
         Envio pode demorar alguns minutos. Não feche a página.
       </span>
     </div>
+
+    <!-- Progresso do envio. Sem isto, um arquivo de 150 MB parece
+         travado e a pessoa fecha a página no meio. -->
+    <div id="boxProgresso" style="display:none;margin-top:18px">
+      <div style="display:flex;justify-content:space-between;
+           align-items:baseline;margin-bottom:6px">
+        <span id="txtProgresso" style="font-size:13px">Enviando…</span>
+        <span id="pctProgresso" class="mono" style="font-size:13px;
+              color:var(--ambar)">0%</span>
+      </div>
+      <div style="background:var(--bg-3);height:10px;border-radius:5px;
+           overflow:hidden">
+        <div id="barraProgresso" style="height:10px;width:0%;
+             background:var(--ambar);transition:width .2s"></div>
+      </div>
+      <div id="detProgresso" class="subtitulo"
+           style="margin:6px 0 0;font-size:11px"></div>
+    </div>
+
+    <div id="msgResultado" style="display:none;margin-top:18px"></div>
   </form>
 </div>
 
@@ -439,6 +476,113 @@ abre_pagina('Versões', 'versoes');
 </div>
 
 <script>
+/* Envio com barra de progresso.
+
+   O POST comum não dá visibilidade nenhuma: a página fica em branco
+   por minutos e a pessoa acha que travou. Com XMLHttpRequest dá para
+   acompanhar os bytes enviados e mostrar quanto falta. */
+(function () {
+  var form = document.querySelector('form[enctype]');
+  if (!form) return;
+
+  var btn   = document.getElementById('btnPublicar');
+  var box   = document.getElementById('boxProgresso');
+  var barra = document.getElementById('barraProgresso');
+  var pct   = document.getElementById('pctProgresso');
+  var txt   = document.getElementById('txtProgresso');
+  var det   = document.getElementById('detProgresso');
+  var aviso = document.getElementById('avisoEnvio');
+  var res   = document.getElementById('msgResultado');
+
+  function mb(b) { return (b / 1048576).toFixed(1).replace('.', ',') + ' MB'; }
+
+  function mostrar(ok, texto) {
+    res.style.display = '';
+    res.className = 'aviso ' + (ok ? 'ok' : 'erro');
+    res.textContent = texto;
+    res.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  form.addEventListener('submit', function (ev) {
+    var arq = form.querySelector('input[type=file]');
+    if (!arq || !arq.files.length) return;   // deixa o HTML reclamar
+
+    ev.preventDefault();
+    res.style.display = 'none';
+    box.style.display = '';
+    aviso.textContent = '';
+    btn.disabled = true;
+    btn.textContent = 'Enviando…';
+
+    var xhr = new XMLHttpRequest();
+    var t0 = Date.now();
+
+    xhr.upload.addEventListener('progress', function (e) {
+      if (!e.lengthComputable) return;
+      var p = Math.round((e.loaded / e.total) * 100);
+      barra.style.width = p + '%';
+      pct.textContent = p + '%';
+
+      var seg = (Date.now() - t0) / 1000;
+      var vel = seg > 0 ? e.loaded / seg : 0;
+      var falta = vel > 0 ? Math.round((e.total - e.loaded) / vel) : 0;
+
+      det.textContent = mb(e.loaded) + ' de ' + mb(e.total) +
+        (vel > 0 ? ' · ' + mb(vel) + '/s' : '') +
+        (falta > 0 && p < 100 ? ' · faltam ' + (falta > 60
+            ? Math.ceil(falta / 60) + ' min' : falta + 's') : '');
+    });
+
+    // 100% enviado não é 100% pronto: o servidor ainda grava o arquivo
+    // e calcula o hash. Sem este aviso, a barra cheia e nada
+    // acontecendo parece travamento.
+    xhr.upload.addEventListener('load', function () {
+      txt.textContent = 'Processando no servidor…';
+      det.textContent = 'Gravando o arquivo e conferindo a integridade.';
+    });
+
+    xhr.addEventListener('load', function () {
+      btn.disabled = false;
+      btn.textContent = 'Publicar';
+      box.style.display = 'none';
+      aviso.textContent = 'Envio pode demorar alguns minutos. Não feche a página.';
+
+      var r;
+      try { r = JSON.parse(xhr.responseText); }
+      catch (e) {
+        mostrar(false, 'Resposta inesperada do servidor (HTTP ' +
+                       xhr.status + ').');
+        return;
+      }
+
+      mostrar(r.ok, r.msg || (r.ok ? 'Enviado.' : 'Falha no envio.'));
+      if (r.ok) {
+        form.reset();
+        // recarrega para a versão nova aparecer na lista
+        setTimeout(function () { location.reload(); }, 2500);
+      }
+    });
+
+    xhr.addEventListener('error', function () {
+      btn.disabled = false;
+      btn.textContent = 'Publicar';
+      box.style.display = 'none';
+      mostrar(false, 'A conexão caiu durante o envio. Tente de novo.');
+    });
+
+    xhr.addEventListener('abort', function () {
+      btn.disabled = false;
+      btn.textContent = 'Publicar';
+      box.style.display = 'none';
+      mostrar(false, 'Envio cancelado.');
+    });
+
+    xhr.open('POST', 'versoes.php');
+    xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+    xhr.send(new FormData(form));
+  });
+})();
+
 function copiarLink(btn) {
   var txt = btn.getAttribute('data-link');
   var ok = function () {
