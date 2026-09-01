@@ -15,16 +15,112 @@ exige_admin_escopo();
 
 $msg=''; $tipo=''; $abrirForm=false; $old=[];
 
+/* ---------------------------------------------------------------------
+ *  DESATIVAR x EXCLUIR
+ * ---------------------------------------------------------------------
+ *  Desativar é o padrão: some das listas de seleção, não pode entrar no
+ *  painel, mas o histórico continua de pé — licenças emitidas por ele
+ *  seguem mostrando quem vendeu.
+ *
+ *  Excluir só quando NÃO há nada vinculado. Com licenças, apagar
+ *  deixaria o campo revendedor_id apontando para o vazio (ou pior, um
+ *  CASCADE poderia levar as licenças junto) — e você perderia o registro
+ *  de uma venda que aconteceu de verdade.
+ * ------------------------------------------------------------------- */
+function vinculos_revendedor(int $id): array {
+    $l = db()->prepare('SELECT COUNT(*) FROM licencas WHERE revendedor_id=?');
+    $l->execute([$id]);
+    $c = db()->prepare('SELECT COUNT(*) FROM clientes WHERE revendedor_id=?');
+    $c->execute([$id]);
+    return ['licencas' => (int)$l->fetchColumn(),
+            'clientes' => (int)$c->fetchColumn()];
+}
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='ativar') {
+    if (csrf_valido()) {
+        $id = (int)$_POST['id'];
+        db()->prepare(
+          "UPDATE usuarios SET ativo = 1 - ativo
+            WHERE id=? AND papel='revendedor'")->execute([$id]);
+        $st = db()->prepare('SELECT ativo FROM usuarios WHERE id=?');
+        $st->execute([$id]);
+        $_SESSION['flashR'] = [
+            $st->fetchColumn() ? 'Revendedor reativado.'
+                               : 'Revendedor desativado. O histórico foi mantido.',
+            'ok'];
+        header('Location: revendedores.php'); exit;
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='excluir') {
+    if (csrf_valido()) {
+        $id = (int)$_POST['id'];
+        $v  = vinculos_revendedor($id);
+
+        if ($v['licencas'] > 0 || $v['clientes'] > 0) {
+            $_SESSION['flashR'] = [
+                'Não é possível excluir: há ' . $v['licencas'] . ' licença(s) e '
+                . $v['clientes'] . ' cliente(s) vinculados. Desative em vez '
+                . 'de excluir — assim o histórico é preservado.', 'erro'];
+        } else {
+            db()->prepare('DELETE FROM revendedor_contatos WHERE revendedor_id=?')
+                ->execute([$id]);
+            db()->prepare("DELETE FROM usuarios WHERE id=? AND papel='revendedor'")
+                ->execute([$id]);
+            $_SESSION['flashR'] = ['Revendedor excluído.', 'ok'];
+        }
+        header('Location: revendedores.php'); exit;
+    }
+}
+
+if (!empty($_SESSION['flashR'])) {
+    [$msg, $tipo] = $_SESSION['flashR'];
+    unset($_SESSION['flashR']);
+}
+
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
     if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
     else {
         $nome  = trim($_POST['nome'] ?? '');
-        $email = trim($_POST['email'] ?? '');
+        $email = mb_strtolower(trim($_POST['email'] ?? ''));
         $senha = $_POST['senha'] ?? '';
+        $cnpj  = trim($_POST['cnpj'] ?? '');
+        $cnpjN = preg_replace('/\D/', '', $cnpj);
 
-        if ($nome==='' || $email==='' || strlen($senha) < 6) {
-            $msg='Preencha responsável, e-mail e senha (mínimo 6 caracteres).';
-            $tipo='erro'; $abrirForm=true; $old=$_POST;
+        // Login é OPCIONAL: nem todo parceiro usa o painel. Sem e-mail,
+        // ele existe como cadastro comercial — aparece nas licenças e no
+        // financeiro — mas não acessa nada.
+        $querLogin = ($email !== '' || $senha !== '');
+
+        $erro = '';
+        if ($nome === '')
+            $erro = 'Informe o nome do responsável.';
+        elseif ($querLogin && $email === '')
+            $erro = 'Para dar acesso ao painel, informe o e-mail.';
+        elseif ($querLogin && strlen($senha) < 6)
+            $erro = 'A senha precisa de ao menos 6 caracteres.';
+        elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))
+            $erro = 'E-mail inválido: ' . $email;
+        elseif ($cnpjN !== '' && strlen($cnpjN) !== 14)
+            $erro = 'CNPJ deve ter 14 dígitos.';
+
+        // CNPJ repetido: o UNIQUE do banco pega, mas a mensagem dele é
+        // incompreensível. Avisar antes, dizendo qual cadastro já existe.
+        if ($erro === '' && $cnpjN !== '') {
+            $st = db()->prepare(
+              "SELECT id, COALESCE(nome_fantasia, empresa, nome) AS rot
+                 FROM usuarios
+                WHERE papel='revendedor'
+                  AND REPLACE(REPLACE(REPLACE(cnpj,'.',''),'/',''),'-','') = ?
+                LIMIT 1");
+            $st->execute([$cnpjN]);
+            if ($j = $st->fetch())
+                $erro = 'Já existe um revendedor com este CNPJ: '
+                      . $j['rot'] . ' (cadastro #' . $j['id'] . ').';
+        }
+
+        if ($erro !== '') {
+            $msg = $erro; $tipo='erro'; $abrirForm=true; $old=$_POST;
         } else {
             try {
                 db()->beginTransaction();
@@ -43,8 +139,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
                     (strtoupper(substr(trim($_POST['uf'] ?? ''),0,2)) ?: null),
                     (trim($_POST['observacao'] ?? '') ?: null),
                     ((int)($_POST['limite_estoque'] ?? 0) ?: null),
-                    $email,
-                    password_hash($senha, PASSWORD_DEFAULT),
+                    ($email ?: null),
+                    ($senha !== '' ? password_hash($senha, PASSWORD_DEFAULT) : null),
                   ]);
                 $novoId = (int)db()->lastInsertId();
                 db()->prepare(
@@ -52,7 +148,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
                      (revendedor_id,nome,telefone,email,principal)
                    VALUES (?,?,?,?,1)')
                   ->execute([$novoId, $nome,
-                             (trim($_POST['telefone'] ?? '') ?: null), $email]);
+                             (trim($_POST['telefone'] ?? '') ?: null),
+                             ($email ?: null)]);
                 db()->commit();
                 $msg='Revendedor cadastrado.'; $tipo='ok';
             } catch (Throwable $e) {
@@ -188,17 +285,22 @@ abre_pagina('Revendedores', 'revendedores');
                value="<?= v($old,'uf') ?>"></div>
     </div>
 
-    <h3 style="font-size:13px;margin:18px 0 10px">Acesso ao painel</h3>
+    <h3 style="font-size:13px;margin:18px 0 4px">Acesso ao painel</h3>
+    <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
+      Opcional. Deixe em branco se este parceiro não vai usar o painel —
+      ele continua aparecendo nas licenças e no financeiro. Dá para
+      liberar o acesso depois.
+    </p>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
       <div><label>Responsável *</label>
         <input name="nome" id="rNome" autocomplete="off"
                required value="<?= v($old,'nome') ?>"></div>
-      <div><label>E-mail (login) *</label>
-        <input name="email" id="rEmail" type="email" required
+      <div><label>E-mail (login)</label>
+        <input name="email" id="rEmail" type="email"
                autocomplete="new-password"
                value="<?= v($old,'email') ?>"></div>
-      <div><label>Senha inicial *</label>
-        <input name="senha" type="password" required minlength="6"
+      <div><label>Senha inicial</label>
+        <input name="senha" type="password" minlength="6"
                autocomplete="new-password"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 3fr;gap:16px;margin-top:12px">
@@ -271,7 +373,32 @@ abre_pagina('Revendedores', 'revendedores');
           <span class="badge <?= $r['ativo'] ? 'ativa' : 'revogada' ?>">
             <?= $r['ativo'] ? 'ativo' : 'inativo' ?></span>
         </td>
-        <td><a class="btn sec pequeno" href="revendedor.php?id=<?= $r['id'] ?>">Ver detalhes</a></td>
+        <td style="white-space:nowrap">
+          <?php $vinc = vinculos_revendedor((int)$r['id']); ?>
+          <a class="btn sec pequeno" href="revendedor.php?id=<?= $r['id'] ?>">Ver</a>
+
+          <form method="post" style="display:inline">
+            <input type="hidden" name="acao" value="ativar">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <input type="hidden" name="id" value="<?= $r['id'] ?>">
+            <button class="btn sec pequeno">
+              <?= $r['ativo'] ? 'Desativar' : 'Reativar' ?></button>
+          </form>
+
+          <?php if (!$vinc['licencas'] && !$vinc['clientes']): ?>
+            <form method="post" style="display:inline"
+                  onsubmit="return confirm('Excluir este revendedor? Não há nada vinculado a ele.')">
+              <input type="hidden" name="acao" value="excluir">
+              <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+              <input type="hidden" name="id" value="<?= $r['id'] ?>">
+              <button class="btn perigo pequeno">Excluir</button>
+            </form>
+          <?php else: ?>
+            <span class="subtitulo" style="margin:0;font-size:10px"
+                  title="<?= $vinc['licencas'] ?> licença(s), <?= $vinc['clientes'] ?> cliente(s)">
+              tem histórico</span>
+          <?php endif; ?>
+        </td>
       </tr>
     <?php endforeach; endif; ?>
     </tbody>

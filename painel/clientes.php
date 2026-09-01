@@ -13,7 +13,60 @@ exige_login();
  *  cadastro falha, para nao perder o que ja foi digitado.
  * ===================================================================== */
 
-$msg=''; $tipo=''; $abrirForm=false; $old=[];
+$msg=''; $tipo='';
+
+/* ---------------------------------------------------------------------
+ *  DESATIVAR x EXCLUIR
+ * ---------------------------------------------------------------------
+ *  Cliente com licença nunca é apagado: aquelas licenças são registro
+ *  de uma venda real, e sem o cliente elas ficariam órfãs. Desativar
+ *  tira das listas de seleção e mantém tudo consultável.
+ * ------------------------------------------------------------------- */
+function vinculos_cliente(int $id): array {
+    $l = db()->prepare('SELECT COUNT(*) FROM licencas WHERE cliente_id=?');
+    $l->execute([$id]);
+    return ['licencas' => (int)$l->fetchColumn()];
+}
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='ativar_cli') {
+    if (csrf_valido()) {
+        $id = (int)$_POST['id'];
+        exige_cliente_do_usuario($id);
+        db()->prepare('UPDATE clientes SET ativo = 1 - ativo WHERE id=?')
+            ->execute([$id]);
+        $st = db()->prepare('SELECT ativo FROM clientes WHERE id=?');
+        $st->execute([$id]);
+        $_SESSION['flashCl'] = [
+            $st->fetchColumn() ? 'Cliente reativado.'
+                               : 'Cliente desativado. As licenças dele continuam registradas.',
+            'ok'];
+        header('Location: clientes.php'); exit;
+    }
+}
+
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='excluir_cli') {
+    if (csrf_valido()) {
+        $id = (int)$_POST['id'];
+        exige_cliente_do_usuario($id);
+        $v = vinculos_cliente($id);
+        if ($v['licencas'] > 0) {
+            $_SESSION['flashCl'] = [
+                'Não é possível excluir: há ' . $v['licencas'] . ' licença(s) '
+                . 'vinculada(s). Desative em vez de excluir.', 'erro'];
+        } else {
+            db()->prepare('DELETE FROM cliente_contatos WHERE cliente_id=?')
+                ->execute([$id]);
+            db()->prepare('DELETE FROM clientes WHERE id=?')->execute([$id]);
+            $_SESSION['flashCl'] = ['Cliente excluído.', 'ok'];
+        }
+        header('Location: clientes.php'); exit;
+    }
+}
+
+if (!empty($_SESSION['flashCl'])) {
+    [$msg, $tipo] = $_SESSION['flashCl'];
+    unset($_SESSION['flashCl']);
+} $abrirForm=false; $old=[];
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
     if (!csrf_valido()) { $msg='Sessão inválida. Recarregue a página.'; $tipo='erro'; }
@@ -233,7 +286,10 @@ abre_pagina($ehRev ? 'Meus clientes' : 'Clientes', 'clientes');
       </td></tr>
     <?php else: foreach ($clientes as $c): ?>
       <tr>
-        <td>
+        <td style="<?= (isset($c['ativo']) && !$c['ativo']) ? 'opacity:.5' : '' ?>">
+          <?php if (isset($c['ativo']) && !$c['ativo']): ?>
+            <span class="badge expirada" style="font-size:10px">inativo</span><br>
+          <?php endif; ?>
           <a href="cliente.php?id=<?= $c['id'] ?>">
             <b><?= e($c['nome_fantasia'] ?: $c['razao_social']) ?></b></a>
           <?php if ($c['nome_fantasia']): ?>
@@ -260,7 +316,28 @@ abre_pagina($ehRev ? 'Meus clientes' : 'Clientes', 'clientes');
         <td style="font-size:11px;color:var(--texto-2)">
           <?= $c['visto_em'] ? date('d/m/Y H:i', strtotime($c['visto_em'])) : '—' ?>
         </td>
-        <td><a class="btn sec pequeno" href="cliente.php?id=<?= $c['id'] ?>">Ver detalhes</a></td>
+        <td style="white-space:nowrap">
+          <?php $vc = vinculos_cliente((int)$c['id']); ?>
+          <a class="btn sec pequeno" href="cliente.php?id=<?= $c['id'] ?>">Ver</a>
+
+          <form method="post" style="display:inline">
+            <input type="hidden" name="acao" value="ativar_cli">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <input type="hidden" name="id" value="<?= $c['id'] ?>">
+            <button class="btn sec pequeno">
+              <?= (!isset($c['ativo']) || $c['ativo']) ? 'Desativar' : 'Reativar' ?></button>
+          </form>
+
+          <?php if (!$vc['licencas']): ?>
+            <form method="post" style="display:inline"
+                  onsubmit="return confirm('Excluir este cliente? Não há licenças vinculadas.')">
+              <input type="hidden" name="acao" value="excluir_cli">
+              <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+              <input type="hidden" name="id" value="<?= $c['id'] ?>">
+              <button class="btn perigo pequeno">Excluir</button>
+            </form>
+          <?php endif; ?>
+        </td>
       </tr>
     <?php endforeach; endif; ?>
     </tbody>
