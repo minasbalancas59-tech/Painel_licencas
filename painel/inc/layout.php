@@ -67,6 +67,8 @@ function menu_estrutura(string $papel): array {
         ['rotulo'=>'Sistema', 'itens'=>[
             ['rotulo'=>'Catálogo',      'url'=>'catalogo.php',
              'pagina'=>'catalogo',      'desc'=>'Softwares, tipos e módulos'],
+            ['rotulo'=>'Tabela de preços','url'=>'precos.php',
+             'pagina'=>'precos',        'desc'=>'Anuidade e perpétua por tipo'],
             ['rotulo'=>'Usuários',      'url'=>'usuarios.php',
              'pagina'=>'usuarios',      'desc'=>'Logins administrativos'],
             ['rotulo'=>'Configurações', 'url'=>'configuracoes.php',

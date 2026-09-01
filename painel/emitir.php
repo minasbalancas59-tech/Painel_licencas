@@ -57,6 +57,10 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         $valorTxt = str_replace(['.', ','], ['', '.'],
                                 trim($_POST['valor'] ?? ''));
         $valorLic = $valorTxt === '' ? null : max(0, (float)$valorTxt);
+        $modelo   = (($_POST['modelo'] ?? '') === 'perpetua')
+                    ? 'perpetua' : 'assinatura';
+        // reforco no servidor: nao depende do JS ter feito seu papel
+        if ($modelo === 'perpetua') $meses = 120;
         $carencia = (int)($_POST['carencia'] ?? 15);
         $mods     = $_POST['modulos'] ?? [];
         // destino explicito: evita o engano de deixar o cliente vazio
@@ -128,24 +132,29 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
                     $geradas[] = $chave;
                     $idsEmitidos[] = $licId;
 
+                    db()->prepare('UPDATE licencas SET modelo=? WHERE id=?')
+                        ->execute([$modelo, $licId]);
+
                     // Cada emissao e um evento de receita com data
                     // propria. Guardar o valor so na licenca nao
                     // serviria: uma licenca renovada tres vezes teria
                     // um valor e tres receitas em meses diferentes.
                     if ($valorLic !== null) {
                         db()->prepare(
-                          'UPDATE licencas SET valor=? WHERE id=?')
-                          ->execute([$valorLic, $licId]);
+                          'UPDATE licencas SET valor=?, modelo=? WHERE id=?')
+                          ->execute([$valorLic, $modelo, $licId]);
 
                         db()->prepare(
                           'INSERT INTO financeiro_mov
-                             (licenca_id, tipo, valor, valor_tabela, meses,
-                              cliente_id, revendedor_id, produto, tier,
+                             (licenca_id, tipo, modelo, valor, valor_tabela,
+                              meses, cliente_id, revendedor_id, produto, tier,
                               competencia, criado_por)
-                           VALUES (?,"emissao",?,?,?,?,?,?,?,
+                           VALUES (?,"emissao",?,?,?,?,?,?,?,?,
                                    DATE_FORMAT(NOW(),"%Y-%m"),?)')
-                          ->execute([$licId, $valorLic,
-                                     $t['preco_base'] ?? null, $meses,
+                          ->execute([$licId, $modelo, $valorLic,
+                                     ($modelo === 'perpetua'
+                                        ? ($t['preco_perpetuo'] ?? null)
+                                        : ($t['preco_base'] ?? null)), $meses,
                                      $cliId ?: null, $revId ?: null,
                                      $t['produto_codigo'], $t['tier_codigo'],
                                      $u['id']]);
@@ -210,7 +219,8 @@ $produtos = db()->query(
   'SELECT id,codigo,nome FROM produtos WHERE ativo=1 ORDER BY codigo')->fetchAll();
 
 $tiers = db()->query(
-  'SELECT id,produto_id,codigo,nome,nivel,preco_base FROM tiers WHERE ativo=1
+  'SELECT id,produto_id,codigo,nome,nivel,preco_base,preco_perpetuo
+     FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
 
 $modulosCat = db()->query(
@@ -319,7 +329,9 @@ abre_pagina('Emitir licença', 'emitir');
           <?php foreach ($tiers as $t): ?>
             <option value="<?= $t['id'] ?>" data-produto="<?= $t['produto_id'] ?>"
                     data-preco="<?= $t['preco_base'] !== null
-                                    ? (float)$t['preco_base'] : '' ?>">
+                                    ? (float)$t['preco_base'] : '' ?>"
+                    data-perp="<?= $t['preco_perpetuo'] !== null
+                                   ? (float)$t['preco_perpetuo'] : '' ?>">
               nível <?= (int)$t['nivel'] ?> · <?= e($t['nome']) ?>
             </option>
           <?php endforeach; ?>
@@ -330,6 +342,26 @@ abre_pagina('Emitir licença', 'emitir');
 
 <div class="card">
   <h3>3 · Condições</h3>
+
+    <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap">
+      <label id="lblAssin" style="flex:1;min-width:200px;border:2px solid var(--ambar);
+             border-radius:var(--radius);padding:10px 14px;cursor:pointer;
+             text-transform:none;margin:0">
+        <input type="radio" name="modelo" value="assinatura" checked
+               style="width:auto"> <b>Assinatura</b>
+        <span style="display:block;font-size:11px;color:var(--texto-2);
+              margin-top:2px">Cobrança por período, renovada no vencimento</span>
+      </label>
+      <label id="lblPerp" style="flex:1;min-width:200px;border:2px solid var(--borda);
+             border-radius:var(--radius);padding:10px 14px;cursor:pointer;
+             text-transform:none;margin:0">
+        <input type="radio" name="modelo" value="perpetua"
+               style="width:auto"> <b>Perpétua</b>
+        <span style="display:block;font-size:11px;color:var(--texto-2);
+              margin-top:2px">Pagamento único, licença emitida por 10 anos</span>
+      </label>
+    </div>
+
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
       <div>
         <label>Valor cobrado (R$)</label>
@@ -464,6 +496,33 @@ function filtrarPorProduto() {
   sugerirValor();
 }
 
+function trocarModelo() {
+  var perp = document.querySelector('input[name=modelo]:checked').value === 'perpetua';
+  document.getElementById('lblAssin').style.borderColor =
+      perp ? 'var(--borda)' : 'var(--ambar)';
+  document.getElementById('lblPerp').style.borderColor =
+      perp ? 'var(--ambar)' : 'var(--borda)';
+
+  // Perpetua e emitida com 10 anos: e o que o Delphi entende como
+  // "sem prazo pratico".
+  //
+  // NAO uso disabled: campo desabilitado nao e enviado no POST, e a
+  // licenca chegaria sem 'meses' - caindo no padrao de 12. Deixo o
+  // select ativo mas so com a opcao valida.
+  var meses = document.querySelector('select[name=meses]');
+  if (perp) {
+    meses.value = '120';
+    for (var i = 0; i < meses.options.length; i++)
+      meses.options[i].disabled = (meses.options[i].value !== '120');
+  } else {
+    for (var j = 0; j < meses.options.length; j++)
+      meses.options[j].disabled = false;
+    if (meses.value === '120') meses.value = '12';
+  }
+
+  sugerirValor();
+}
+
 function sugerirValor() {
   var tier  = document.getElementById('tier_id');
   var meses = document.querySelector('select[name=meses]');
@@ -471,11 +530,19 @@ function sugerirValor() {
   var dica  = document.getElementById('dicaValor');
   if (!tier || !meses || !campo) return;
 
+  var perp = document.querySelector('input[name=modelo]:checked').value === 'perpetua';
   var op = tier.options[tier.selectedIndex];
-  var base = op ? parseFloat(op.getAttribute('data-preco')) : NaN;
-  if (!base || isNaN(base)) { dica.textContent = 'Sem preço de tabela.'; return; }
 
-  var v = base * (parseInt(meses.value, 10) / 12);
+  // preco perpetuo NAO se calcula da anuidade: sao valores comerciais
+  // independentes, por isso duas colunas na tabela
+  var base = op ? parseFloat(op.getAttribute(perp ? 'data-perp' : 'data-preco')) : NaN;
+  if (!base || isNaN(base)) {
+    dica.textContent = 'Sem preço de tabela para ' +
+                       (perp ? 'perpétua' : 'assinatura') + '.';
+    return;
+  }
+
+  var v = perp ? base : base * (parseInt(meses.value, 10) / 12);
   var destino = document.querySelector('input[name=destino]:checked');
   var desc = 0;
   if (destino && destino.value === 'revenda') {
@@ -517,6 +584,10 @@ document.addEventListener('DOMContentLoaded', function () {
   document.querySelectorAll('input[name=destino]').forEach(function (r) {
     r.addEventListener('change', trocarDestino);
   });
+  document.querySelectorAll('input[name=modelo]').forEach(function (r) {
+    r.addEventListener('change', trocarModelo);
+  });
+  trocarModelo();
 });
 </script>
 <?php fecha_pagina();

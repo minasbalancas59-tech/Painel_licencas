@@ -328,7 +328,8 @@ abre_pagina('Catálogo', 'catalogo');
 
   <table style="margin-top:14px">
     <thead><tr><th>Software</th><th>Nível</th><th>Código</th><th>Nome</th>
-      <th style="text-align:right">Preço anual</th>
+      <th style="text-align:right">Anuidade<br>
+        <span style="font-weight:normal;color:var(--ambar)">Perpétua</span></th>
       <th>Licenças</th><th>Situação</th><th></th></tr></thead>
     <tbody>
     <?php foreach ($tiers as $t): ?>
@@ -341,10 +342,14 @@ abre_pagina('Catálogo', 'catalogo');
             <br><span style="font-size:11px;color:var(--texto-2)">
               <?= e($t['descricao']) ?></span>
           <?php endif; ?></td>
-        <td class="mono" style="text-align:right">
+        <td class="mono" style="text-align:right;font-size:11px">
           <?= $t['preco_base'] !== null
-              ? 'R$ ' . number_format((float)$t['preco_base'],2,',','.')
-              : '<span style="color:var(--texto-2)">—</span>' ?></td>
+              ? number_format((float)$t['preco_base'],2,',','.')
+              : '<span style="color:var(--texto-2)">—</span>' ?>
+          <?php if (!empty($t['preco_perpetuo'])): ?>
+            <br><span style="color:var(--ambar)">
+              <?= number_format((float)$t['preco_perpetuo'],2,',','.') ?></span>
+          <?php endif; ?></td>
         <td class="mono"><?= (int)$t['n_lic'] ?></td>
         <td><span class="badge <?= $t['ativo']?'ativa':'expirada' ?>">
           <?= $t['ativo']?'ativo':'inativo' ?></span></td>
@@ -365,7 +370,7 @@ abre_pagina('Catálogo', 'catalogo');
             <input type="hidden" name="acao" value="tier_editar">
             <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
             <input type="hidden" name="id" value="<?= $t['id'] ?>">
-            <div style="display:grid;grid-template-columns:1fr 2fr 1fr 1fr 3fr;gap:14px">
+            <div style="display:grid;grid-template-columns:1fr 2fr 1fr 3fr;gap:14px">
               <div><label>Código
                   <?php if ((int)$t['n_lic']>0): ?>
                     <span style="text-transform:none;color:var(--texto-2)">· travado</span>
@@ -381,10 +386,6 @@ abre_pagina('Catálogo', 'catalogo');
                 <input name="nivel" type="number" min="1" max="99"
                        value="<?= (int)$t['nivel'] ?>"
                        <?= (int)$t['n_lic']>0 ? 'readonly' : '' ?>></div>
-              <div><label>Preço anual (R$)</label>
-                <input name="preco_base" inputmode="decimal"
-                       value="<?= $t['preco_base'] !== null
-                           ? number_format((float)$t['preco_base'],2,',','.') : '' ?>"></div>
               <div><label>Descrição</label>
                 <input name="descricao" value="<?= e($t['descricao'] ?? '') ?>"></div>
             </div>
@@ -392,8 +393,8 @@ abre_pagina('Catálogo', 'catalogo');
               <p class="subtitulo" style="margin:8px 0 0;font-size:11px">
                 <?= (int)$t['n_lic'] ?> licença(s) usam este tipo. Mudar o
                 nível reclassificaria o que esses clientes já contrataram.
-                O preço pode mudar: vale para as próximas vendas, não
-                altera o que já foi cobrado.
+                Os preços são editados em
+                <a href="precos.php">Tabela de preços</a>.
               </p>
             <?php endif; ?>
             <div style="margin-top:10px">
