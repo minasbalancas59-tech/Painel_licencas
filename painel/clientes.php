@@ -25,11 +25,19 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='novo') {
         $uf       = strtoupper(substr(trim($_POST['uf'] ?? ''), 0, 2));
         $contato  = trim($_POST['contato'] ?? '');
         $telefone = trim($_POST['telefone'] ?? '');
-        $email    = trim($_POST['email'] ?? '');
+        // Minusculas sempre: o e-mail nao diferencia caixa na pratica,
+        // e "Joao@Empresa.com" x "joao@empresa.com" viraria cliente
+        // duplicado na busca.
+        $email    = mb_strtolower(trim($_POST['email'] ?? ''));
         $obs      = trim($_POST['observacao'] ?? '');
 
         if ($razao === '') {
             $msg='Informe a razão social.'; $tipo='erro';
+        } elseif ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            // E-mail errado no cadastro so aparece quando a licenca nao
+            // chega - meses depois, e sem ninguem relacionar as coisas.
+            $msg = 'E-mail inválido: ' . $email;
+            $tipo='erro'; $abrirForm=true; $old=$_POST;
             $abrirForm=true; $old=$_POST;
         } else {
             try {
@@ -260,6 +268,25 @@ abre_pagina($ehRev ? 'Meus clientes' : 'Clientes', 'clientes');
 </div>
 
 <script>
+/* E-mail em minusculas e validado antes de enviar.
+
+   O type="email" do HTML ja recusa formatos absurdos, mas aceita
+   "joao@empresa" sem dominio - que passa e depois nao entrega. */
+(function () {
+  var c = document.getElementById('fEmail');
+  if (!c) return;
+
+  c.addEventListener('blur', function () {
+    c.value = c.value.trim().toLowerCase();
+    if (c.value === '') { c.setCustomValidity(''); return; }
+    var ok = /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/.test(c.value);
+    c.setCustomValidity(ok ? '' : 'E-mail incompleto — falta o domínio, como .com.br');
+    if (!ok) c.reportValidity();
+  });
+
+  c.addEventListener('input', function () { c.setCustomValidity(''); });
+})();
+
 function buscarCnpj() {
   const campo  = document.getElementById('fCnpj');
   const status = document.getElementById('cnpjStatus');
@@ -292,7 +319,7 @@ function buscarCnpj() {
       por('fMunicipio', d.municipio);
       por('fUf', d.uf);
       por('fTelefone', d.telefone);
-      por('fEmail', d.email);
+      por('fEmail', (d.email || '').toLowerCase());
 
       status.textContent = d.situacao ? ('Receita: ' + d.situacao) : 'Dados carregados.';
       status.style.color = (d.situacao && d.situacao.toUpperCase() !== 'ATIVA')

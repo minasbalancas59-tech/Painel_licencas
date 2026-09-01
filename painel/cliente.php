@@ -45,6 +45,22 @@ if (!empty($_SESSION['flashC'])) {
     unset($_SESSION['flashC']);
 }
 
+/**
+ * Normaliza e valida um e-mail de contato.
+ * Devolve null quando vazio; lanca quando invalido.
+ *
+ * Minusculas porque o e-mail nao diferencia caixa na pratica, e a
+ * mesma pessoa cadastrada como "Joao@" e "joao@" viraria dois
+ * contatos na busca.
+ */
+function email_contato(?string $bruto): ?string {
+    $e = mb_strtolower(trim((string)$bruto));
+    if ($e === '') return null;
+    if (!filter_var($e, FILTER_VALIDATE_EMAIL))
+        throw new RuntimeException('E-mail inválido: ' . $e);
+    return $e;
+}
+
 function pos_acao_cli(string $msg, string $tipo): void {
     $_SESSION['flashC'] = ['msg' => $msg, 'tipo' => $tipo];
     header('Location: ' . $_SERVER['REQUEST_URI']);
@@ -52,6 +68,10 @@ function pos_acao_cli(string $msg, string $tipo): void {
 }
 
 if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
+  /* O try envolve todas as acoes: email_contato() lanca quando o
+     endereco e invalido, e sem isto o operador veria um erro fatal do
+     PHP em vez da mensagem explicando o que corrigir. */
+  try {
     $ac = $_POST['acao'] ?? '';
 
     if ($ac === 'contato_novo') {
@@ -65,7 +85,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
               ->execute([$id, $nome,
                          (trim($_POST['c_cargo'] ?? '') ?: null),
                          (trim($_POST['c_telefone'] ?? '') ?: null),
-                         (trim($_POST['c_email'] ?? '') ?: null),
+                         email_contato($_POST['c_email'] ?? null),
                          (trim($_POST['c_obs'] ?? '') ?: null)]);
             pos_acao_cli('Contato adicionado.', 'ok');
         }
@@ -110,7 +130,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
               ->execute([$nome,
                          (trim($_POST['c_cargo'] ?? '') ?: null),
                          (trim($_POST['c_telefone'] ?? '') ?: null),
-                         (trim($_POST['c_email'] ?? '') ?: null),
+                         email_contato($_POST['c_email'] ?? null),
                          (trim($_POST['c_obs'] ?? '') ?: null),
                          (int)$_POST['c_id'], $id]);
             pos_acao_cli('Contato atualizado.', 'ok');
@@ -123,6 +143,11 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && csrf_valido()) {
             ->execute([(int)$_POST['c_id'], $id]);
         pos_acao_cli('Contato principal atualizado.', 'ok');
     }
+
+  } catch (Throwable $e) {
+    $msgC = $e->getMessage();
+    $tipoC = 'erro';
+  }
 }
 
 // ---- contatos do cliente --------------------------------------------

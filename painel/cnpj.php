@@ -26,9 +26,45 @@ function resp(array $d, int $status = 200): void {
     exit;
 }
 
+/**
+ * Valida o digito verificador do CNPJ.
+ *
+ * Sem isto, um numero digitado errado passa no teste de 14 digitos, vai
+ * ate a Receita e volta como "nao encontrado" - o que faz o operador
+ * procurar o cliente que nao existe, em vez de conferir o que digitou.
+ */
+function cnpj_valido(string $c): bool {
+    if (strlen($c) !== 14) return false;
+    // 00000000000000, 11111111111111 etc. passam na formula
+    if (preg_match('/^(\d)\1{13}$/', $c)) return false;
+
+    foreach ([12, 13] as $pos) {
+        $soma = 0;
+        $peso = ($pos === 12) ? 5 : 6;
+        for ($i = 0; $i < $pos; $i++) {
+            $soma += (int)$c[$i] * $peso;
+            $peso = ($peso === 2) ? 9 : $peso - 1;
+        }
+        $dv = $soma % 11;
+        $dv = ($dv < 2) ? 0 : 11 - $dv;
+        if ((int)$c[$pos] !== $dv) return false;
+    }
+    return true;
+}
+
 $cnpj = preg_replace('/\D/', '', $_GET['cnpj'] ?? '');
+
+if ($cnpj === '') {
+    resp(['ok' => false, 'erro' => 'Informe o CNPJ.'], 400);
+}
 if (strlen($cnpj) !== 14) {
-    resp(['ok' => false, 'erro' => 'CNPJ deve ter 14 dígitos.'], 400);
+    resp(['ok' => false,
+          'erro' => 'O CNPJ tem ' . strlen($cnpj) . ' dígito(s); precisa de 14.'
+        ], 400);
+}
+if (!cnpj_valido($cnpj)) {
+    resp(['ok' => false,
+          'erro' => 'CNPJ inválido — confira os números digitados.'], 400);
 }
 
 // cache em disco: a Receita muda pouco, e evita bater na API a cada
