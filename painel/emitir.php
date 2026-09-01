@@ -234,6 +234,28 @@ $revendedores = db()->query(
     WHERE papel='revendedor' AND ativo=1
     ORDER BY COALESCE(nome_fantasia,empresa,nome)")->fetchAll();
 
+/* ---------------------------------------------------------------------
+ *  PREÇOS ESPECIAIS
+ * ---------------------------------------------------------------------
+ *  Carregados de uma vez e resolvidos no navegador. Consultar o servidor
+ *  a cada troca de cliente daria uma ida ao banco por clique, e a
+ *  tabela toda cabe em poucos KB.
+ *
+ *  Acordos vencidos ficam de fora: o sistema volta à tabela sozinho.
+ * ------------------------------------------------------------------- */
+$peLinhas = db()->query(
+  "SELECT tier_id, alvo_tipo, alvo_id, preco_base, preco_perpetuo
+     FROM precos_especiais
+    WHERE vigencia_ate IS NULL OR vigencia_ate >= CURDATE()")->fetchAll();
+
+$peMapa = ['cliente' => [], 'revendedor' => []];
+foreach ($peLinhas as $r) {
+    $peMapa[$r['alvo_tipo']][(int)$r['alvo_id']][(int)$r['tier_id']] = [
+        'b' => $r['preco_base']     !== null ? (float)$r['preco_base']     : null,
+        'p' => $r['preco_perpetuo'] !== null ? (float)$r['preco_perpetuo'] : null,
+    ];
+}
+
 abre_pagina('Emitir licença', 'emitir');
 ?>
 <h1 class="titulo">Emitir licença</h1>
@@ -448,6 +470,16 @@ abre_pagina('Emitir licença', 'emitir');
 </div>
 
 <script>
+// JSON_FORCE_OBJECT: sem ele, um mapa vazio vira [] em vez de {} e o
+// acesso PE.cliente[id] quebra o script inteiro
+var PE = <?= json_encode($peMapa, JSON_UNESCAPED_UNICODE | JSON_FORCE_OBJECT) ?>;
+
+// marca o campo como digitado à mão, para a sugestão não sobrescrever
+document.addEventListener('DOMContentLoaded', function () {
+  var c = document.getElementById('fValor');
+  if (c) c.addEventListener('input', function () { c.dataset.auto = '0'; });
+});
+
 function filtrarPorProduto() {
   var prod = document.getElementById('produto_sel');
   var tier = document.getElementById('tier_id');
@@ -532,29 +564,67 @@ function sugerirValor() {
 
   var perp = document.querySelector('input[name=modelo]:checked').value === 'perpetua';
   var op = tier.options[tier.selectedIndex];
+  if (!op || !op.value) { dica.textContent = ''; return; }
 
-  // preco perpetuo NAO se calcula da anuidade: sao valores comerciais
-  // independentes, por isso duas colunas na tabela
-  var base = op ? parseFloat(op.getAttribute(perp ? 'data-perp' : 'data-preco')) : NaN;
-  if (!base || isNaN(base)) {
-    dica.textContent = 'Sem preço de tabela para ' +
-                       (perp ? 'perpétua' : 'assinatura') + '.';
-    return;
+  var tid = parseInt(op.value, 10);
+  var destino = document.querySelector('input[name=destino]:checked');
+  var ehRevenda = destino && destino.value === 'revenda';
+
+  /* HIERARQUIA — o primeiro que existir vence:
+       1. preço especial do cliente        (venda direta)
+       2. preço especial do revendedor     (venda por ele)
+       3. tabela menos o desconto % dele
+       4. tabela cheia
+
+     O especial NÃO acumula com o percentual: aplicar os dois daria
+     desconto sobre desconto, e o erro só apareceria na margem do mês. */
+  var base = null, origem = '';
+
+  if (!ehRevenda) {
+    var cli = document.getElementById('selCliente');
+    var cid = cli ? parseInt(cli.value, 10) : 0;
+    var pc = cid && PE.cliente[cid] ? PE.cliente[cid][tid] : null;
+    if (pc) {
+      var vv = perp ? pc.p : pc.b;
+      if (vv !== null && vv !== undefined) { base = vv; origem = 'acordo do cliente'; }
+    }
+  } else {
+    var rev = document.getElementById('selRevendedor');
+    var rid = rev ? parseInt(rev.value, 10) : 0;
+    var pr = rid && PE.revendedor[rid] ? PE.revendedor[rid][tid] : null;
+    if (pr) {
+      var vr = perp ? pr.p : pr.b;
+      if (vr !== null && vr !== undefined) { base = vr; origem = 'acordo do revendedor'; }
+    }
+  }
+
+  var desc = 0;
+  if (base === null) {
+    base = parseFloat(op.getAttribute(perp ? 'data-perp' : 'data-preco'));
+    if (!base || isNaN(base)) {
+      dica.textContent = 'Sem preço de tabela para ' +
+                         (perp ? 'perpétua' : 'assinatura') + '.';
+      return;
+    }
+    origem = 'tabela';
+    if (ehRevenda) {
+      var rv = document.getElementById('selRevendedor');
+      var ro = rv && rv.selectedIndex >= 0 ? rv.options[rv.selectedIndex] : null;
+      desc = ro ? parseFloat(ro.getAttribute('data-desconto') || 0) : 0;
+    }
   }
 
   var v = perp ? base : base * (parseInt(meses.value, 10) / 12);
-  var destino = document.querySelector('input[name=destino]:checked');
-  var desc = 0;
-  if (destino && destino.value === 'revenda') {
-    var rev = document.getElementById('selRevendedor');
-    var ro = rev && rev.selectedIndex >= 0 ? rev.options[rev.selectedIndex] : null;
-    desc = ro ? parseFloat(ro.getAttribute('data-desconto') || 0) : 0;
-    if (desc > 0) v = v * (1 - desc / 100);
-  }
+  if (desc > 0) v = v * (1 - desc / 100);
 
   var fmt = v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  dica.textContent = 'Tabela: ' + fmt + (desc > 0 ? ' (-' + desc + '% revenda)' : '');
-  if (!campo.value) campo.value = fmt;
+  dica.textContent = fmt + ' · ' + origem +
+                     (desc > 0 ? ' (-' + desc + '%)' : '');
+  dica.style.color = (origem === 'tabela') ? '' : 'var(--verde)';
+  if (!campo.value || campo.dataset.auto === '1') {
+    campo.value = fmt;
+    campo.dataset.auto = '1';
+  }
 }
 
 function trocarDestino() {
@@ -575,7 +645,7 @@ function trocarDestino() {
 document.addEventListener('DOMContentLoaded', function () {
   trocarDestino();
   filtrarPorProduto();
-  ['tier_id', 'selRevendedor'].forEach(function (id) {
+  ['tier_id', 'selRevendedor', 'selCliente'].forEach(function (id) {
     var el = document.getElementById(id);
     if (el) el.addEventListener('change', sugerirValor);
   });
