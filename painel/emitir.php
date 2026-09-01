@@ -384,7 +384,7 @@ abre_pagina('Emitir licença', 'emitir');
         </select>
       </div>
       <div>
-        <label>Valor cobrado (R$)</label>
+        <label>Valor por licença (R$)</label>
         <input name="valor" id="fValor" inputmode="decimal"
                placeholder="0,00 para cortesia">
         <span class="subtitulo" id="dicaValor"
@@ -432,9 +432,12 @@ abre_pagina('Emitir licença', 'emitir');
       </div>
       <div>
         <label>Quantidade</label>
-        <input type="number" name="quantidade" id="fQtd" value="1" min="1" max="50">
+        <input type="number" name="quantidade" id="fQtd" value="1" min="1"
+               max="50" oninput="mostrarTotal()">
         <span class="subtitulo" id="dicaQtd"
               style="margin:4px 0 0;display:block;font-size:11px"></span>
+        <span id="totalLote" style="margin:4px 0 0;display:block;font-size:12px;
+              color:var(--ambar)"></span>
       </div>
     </div>
 
@@ -477,7 +480,10 @@ var PE = <?= json_encode($peMapa, JSON_UNESCAPED_UNICODE | JSON_FORCE_OBJECT) ?>
 // marca o campo como digitado à mão, para a sugestão não sobrescrever
 document.addEventListener('DOMContentLoaded', function () {
   var c = document.getElementById('fValor');
-  if (c) c.addEventListener('input', function () { c.dataset.auto = '0'; });
+  if (c) c.addEventListener('input', function () {
+    c.dataset.auto = '0';
+    mostrarTotal();
+  });
 });
 
 function filtrarPorProduto() {
@@ -526,6 +532,29 @@ function filtrarPorProduto() {
     mods[j].style.display = (!dp || dp === cod) ? '' : 'none';
   }
   sugerirValor();
+}
+
+/* Mostra o total do lote.
+
+   O campo é o valor de UMA licença — cada uma gera seu próprio
+   movimento financeiro. Sem este aviso, alguém digitaria o total do
+   pedido ali e a receita do mês sairia multiplicada pela quantidade,
+   erro que só apareceria no fechamento e sem pista da causa. */
+function mostrarTotal() {
+  var campo = document.getElementById('fValor');
+  var qtdEl = document.getElementById('fQtd');
+  var alvo  = document.getElementById('totalLote');
+  if (!campo || !qtdEl || !alvo) return;
+
+  var qtd = parseInt(qtdEl.value, 10) || 1;
+  var v = parseFloat(String(campo.value).replace(/\./g, '').replace(',', '.'));
+
+  if (qtd <= 1 || isNaN(v)) { alvo.textContent = ''; return; }
+
+  var tot = (v * qtd).toFixed(2).replace('.', ',')
+              .replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  alvo.innerHTML = qtd + ' licenças &times; o valor acima = ' +
+                   '<b>R$ ' + tot + '</b>';
 }
 
 function trocarModelo() {
@@ -625,6 +654,7 @@ function sugerirValor() {
     campo.value = fmt;
     campo.dataset.auto = '1';
   }
+  mostrarTotal();
 }
 
 function trocarDestino() {
