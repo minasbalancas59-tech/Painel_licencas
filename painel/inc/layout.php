@@ -44,8 +44,10 @@ function menu_estrutura(string $papel): array {
         ]],
 
         ['rotulo'=>'Licenças', 'itens'=>[
-            ['rotulo'=>'Emitir e gerir',   'url'=>'licencas.php',
-             'pagina'=>'licencas',         'desc'=>'Emissão, renovação e revogação'],
+            ['rotulo'=>'Emitir licença',   'url'=>'emitir.php',
+             'pagina'=>'emitir',           'desc'=>'Gerar uma chave nova'],
+            ['rotulo'=>'Licenças emitidas','url'=>'licencas.php',
+             'pagina'=>'licencas',         'desc'=>'Acompanhar, renovar, revogar'],
             ['rotulo'=>'Ativação offline', 'url'=>'offline.php',
              'pagina'=>'offline',          'desc'=>'Para PC sem internet'],
             ['rotulo'=>'Trocas de cliente','url'=>'trocas.php',
