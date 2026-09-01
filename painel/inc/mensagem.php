@@ -41,6 +41,8 @@ function mensagem_licenca(array $lic): string {
      * --------------------------------------------------------------- */
     if (empty($lic['cliente_id'])) {
         if (!empty($lic['tier_nome'])) $t .= 'Tipo: ' . $lic['tier_nome'] . $q;
+        if (!empty($lic['emitido_em']))
+            $t .= 'Emitida em: ' . date('d/m/Y', strtotime($lic['emitido_em'])) . $q;
         if (!empty($lic['modulos']))   $t .= 'Modulos: ' . $lic['modulos'] . $q;
         if (($lic['tipo_licenca'] ?? '') === 'demo')
             $t .= 'Uso: DEMONSTRACAO' . $q;
@@ -61,6 +63,8 @@ function mensagem_licenca(array $lic): string {
     if ($cliente) $t .= 'Cliente: ' . $cliente . $q;
     if (!empty($lic['tier_nome'])) $t .= 'Tipo: ' . $lic['tier_nome'] . $q;
     if (!empty($lic['modulos']))   $t .= 'Modulos: ' . $lic['modulos'] . $q;
+    if (!empty($lic['emitido_em']))
+        $t .= 'Emitida em: ' . date('d/m/Y', strtotime($lic['emitido_em'])) . $q;
 
     $t .= $q;
 
@@ -97,6 +101,70 @@ function botao_whatsapp(array $lic, string $id, string $rotulo = ''): string {
          . 'onclick="copiarLicenca(this)" '
          . 'title="Copia a chave e o passo a passo para enviar ao cliente">'
          . ($rotulo !== '' ? $rotulo : 'Copiar p/ WhatsApp') . '</button>';
+}
+
+
+/**
+ * Mensagem para um LOTE de licenças.
+ *
+ * Enviar dez mensagens separadas de uma remessa faria o revendedor
+ * perder chaves na rolagem da conversa. Uma mensagem só, numerada,
+ * é o que ele consegue guardar e conferir.
+ *
+ * @param array $lics linhas de licenças já com os JOINs resolvidos
+ */
+function mensagem_lote(array $lics): string {
+    if (!$lics) return '';
+    if (count($lics) === 1) return mensagem_licenca($lics[0]);
+
+    $q = "\n";
+    $p = $lics[0];
+
+    $produto = strtoupper($p['produto_codigo'] ?? '');
+    $nomeProduto = $produto === 'TS5'   ? 'Total Scale 5'
+                 : ($produto === 'TS6'  ? 'Total Scale 6'
+                 : ($produto === 'TSLPR'? 'TS LPR' : $produto));
+
+    $t  = '*' . count($lics) . ' LICENCAS ' . ($nomeProduto ?: 'TOTAL SCALE')
+        . '*' . $q . $q;
+
+    if (!empty($p['tier_nome'])) $t .= 'Tipo: ' . $p['tier_nome'] . $q;
+    if (!empty($p['modulos']))   $t .= 'Modulos: ' . $p['modulos'] . $q;
+    if (!empty($p['emitido_em']))
+        $t .= 'Emitidas em: ' . date('d/m/Y', strtotime($p['emitido_em'])) . $q;
+
+    $t .= $q . '*CHAVES*' . $q;
+    $i = 1;
+    foreach ($lics as $l) {
+        $t .= $i . ') ' . $l['chave'] . $q;
+        $i++;
+    }
+
+    // lote sempre vai para estoque: se tivesse cliente, seria uma só
+    $t .= $q . '*ESTAS LICENCAS ESTAO NO SEU ESTOQUE*' . $q . $q;
+    $t .= '1) No painel, va em Minhas licencas' . $q;
+    $t .= '2) Cadastre o cliente em Meus clientes, se ainda nao existir' . $q;
+    $t .= '3) Vincule uma chave ao cliente' . $q;
+    $t .= '4) So entao repasse aquela chave para ele ativar' . $q . $q;
+
+    $t .= 'Cada chave vale para UMA maquina. Vincular antes de repassar '
+        . 'mantem o cadastro correto e permite liberar a maquina se o PC '
+        . 'do cliente queimar.';
+
+    return $t;
+}
+
+/** Botão que copia a mensagem do lote inteiro. */
+function botao_whatsapp_lote(array $lics, string $rotulo = ''): string {
+    $texto = mensagem_lote($lics);
+    $json  = htmlspecialchars(json_encode($texto, JSON_UNESCAPED_UNICODE),
+                              ENT_QUOTES, 'UTF-8');
+    if ($rotulo === '')
+        $rotulo = 'Copiar as ' . count($lics) . ' chaves p/ WhatsApp';
+    return '<button type="button" class="btn" '
+         . 'data-msg="' . $json . '" onclick="copiarLicenca(this)" '
+         . 'title="Copia todas as chaves numa mensagem só">'
+         . $rotulo . '</button>';
 }
 
 /** Script de cópia — inclua uma vez por página. */

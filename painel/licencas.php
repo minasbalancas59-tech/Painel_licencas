@@ -28,23 +28,7 @@ exige_admin_escopo();
  *  outra licenca.
  * ===================================================================== */
 
-$msg=''; $tipo=''; $chaveGerada=''; $idsGerados=[];
-$u = usuario_logado();
-
-/* ---------------------------------------------------------------------
- *  PRECO SUGERIDO
- * ---------------------------------------------------------------------
- *  Tabela do tier, proporcional aos meses, menos o desconto do
- *  revendedor quando a venda e por ele.
- *
- *  E sugestao: o campo continua editavel. Preco de software raramente
- *  sai redondo da tabela, e travar o valor faria o operador registrar
- *  errado para conseguir salvar.
- * ------------------------------------------------------------------- */
-function moeda(?float $v): string {
-    return $v === null ? '—' : 'R$ ' . number_format($v, 2, ',', '.');
-}
-
+$msg=''; $tipo=''; $chaveGerada=''; $abrirEmissao=false; $idsGerados=[];
 
 /* ---------------------------------------------------------------------
  *  POST / Redirect / GET
@@ -71,6 +55,132 @@ if (!empty($_SESSION['flash'])) {
     $chaveGerada = $_SESSION['flash']['chave'] ?? '';
     $idsGerados  = $_SESSION['flash']['ids']   ?? [];
     unset($_SESSION['flash']);
+}
+
+// --- emitir nova licenca (v2: produto + tier) ----------------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
+    if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
+    else {
+        $cliId    = (int)($_POST['cliente_id'] ?? 0);
+        $tierId   = (int)($_POST['tier_id'] ?? 0);
+        // teto de 240 meses (20 anos): sem limite, um valor absurdo
+        // vindo do formulario geraria data invalida no strtotime
+        $meses    = max(1, min(240, (int)($_POST['meses'] ?? 12)));
+        $carencia = (int)($_POST['carencia'] ?? 15);
+        $mods     = $_POST['modulos'] ?? [];
+        // destino explicito: evita o engano de deixar o cliente vazio
+        // sem querer e a licenca sumir para um estoque nao pretendido
+        $destino  = ($_POST['destino'] ?? 'cliente') === 'revenda'
+                    ? 'revenda' : 'cliente';
+        $revId    = (int)($_POST['revendedor_id'] ?? 0) ?: null;
+
+        // cada destino zera o campo do outro
+        if ($destino === 'revenda') { $cliId = 0; }
+        else                        { $revId = null; }
+        $tipoLic  = ($_POST['tipo_licenca'] ?? 'venda') === 'demo' ? 'demo' : 'venda';
+        $qtd      = max(1, min(50, (int)($_POST['quantidade'] ?? 1)));
+        // so aceita codigos que existem e estao ativos no catalogo
+        $validos = db()->query(
+          'SELECT codigo FROM modulos WHERE ativo=1')->fetchAll(PDO::FETCH_COLUMN);
+        $mods = array_intersect(
+            array_map(fn($m)=>strtoupper(preg_replace('/[^A-Za-z0-9]/','',$m)), $mods),
+            $validos);
+        $modsCsv = implode(',', $mods);
+
+        if ($tierId<=0) {
+            $msg='Selecione o software e o tipo de licença.'; $tipo='erro';
+        } elseif ($destino === 'cliente' && $cliId <= 0) {
+            $msg='Para cliente final, selecione o cliente.'; $tipo='erro';
+        } elseif ($destino === 'revenda' && !$revId) {
+            $msg='Para revenda, selecione o revendedor.'; $tipo='erro';
+        }
+        elseif ($meses<=0)     { $msg='Validade inválida.'; $tipo='erro'; }
+        else {
+            try {
+                // resolve produto/tier/nivel a partir do tier escolhido
+                $t = resolver_tier($tierId);   // produto_codigo, tier_codigo, nivel...
+
+                // busca dados do cliente para o payload assinado.
+                // Licenca de estoque nasce sem cliente: quem preenche e o
+                // revendedor, ao vincular. So valida se um cliente foi escolhido.
+                $cliRow = null;
+                if ($cliId > 0) {
+                    $cli = db()->prepare('SELECT razao_social,cnpj FROM clientes WHERE id=?');
+                    $cli->execute([$cliId]);
+                    $cliRow = $cli->fetch();
+                    if (!$cliRow) throw new RuntimeException('Cliente não encontrado.');
+                }
+
+                $emit  = date('Y-m-d');
+                $exp   = date('Y-m-d', strtotime("+$meses months"));
+                $u     = usuario_logado();
+                $geradas = [];
+                $idsEmitidos = [];
+
+                // grava a(s) licenca(s) - fingerprint fica NULL ate a ativacao
+                $st = db()->prepare(
+                  'INSERT INTO licencas
+                     (cliente_id,revendedor_id,produto_id,tier_id,chave,modulos,
+                      emitido_em,expira_em,carencia_dias,status,tipo_licenca,criado_por)
+                   VALUES (?,?,?,?,?,?,?,?,?,"nova",?,?)');
+
+                for ($i = 0; $i < $qtd; $i++) {
+                    // prefixo pelo produto: TS5X, TS6X, TSLPRX...
+                    $chave = gerar_chave_licenca($t['produto_codigo']);
+                    $st->execute([
+                        ($cliId ?: null), $revId,
+                        $t['produto_id'],   // vem do JOIN em resolver_tier()
+                        $tierId, $chave, ($modsCsv ?: ''),
+                        $emit, $exp, $carencia, $tipoLic, $u['id']
+                    ]);
+                    $licId = (int)db()->lastInsertId();
+                    $geradas[] = $chave;
+                    $idsEmitidos[] = $licId;
+
+                    log_acao_painel(
+                        $licId, $chave, null, 'emitir', 'ok',
+                        $u['id'], $u['nome'] ?? null,
+                        $t['produto_codigo'], $t['tier_codigo'],
+                        "validade {$meses}m, carencia {$carencia}d, {$tipoLic}"
+                        . ($revId ? ", revendedor {$revId}" : ''));
+                }
+
+                // envia a chave por e-mail: o WhatsApp some na conversa,
+                // o e-mail fica. Falha aqui nao invalida a emissao.
+                $avisoMail = '';
+                if ($cliId > 0 && $idsEmitidos) {
+                    $stM = db()->prepare(
+                      'SELECT l.*, c.razao_social, c.nome_fantasia,
+                              p.codigo AS produto_codigo
+                         FROM licencas l
+                         LEFT JOIN clientes c ON c.id=l.cliente_id
+                         LEFT JOIN produtos p ON p.id=l.produto_id
+                        WHERE l.id = ?');
+                    $enviados = 0;
+                    foreach ($idsEmitidos as $lid) {
+                        $stM->execute([$lid]);
+                        $rowM = $stM->fetch();
+                        if ($rowM) {
+                            list($n, $txt) = enviar_licenca_email($rowM);
+                            $enviados += $n;
+                            if ($n === 0) $avisoMail = ' ' . $txt;
+                        }
+                    }
+                    if ($enviados > 0)
+                        $avisoMail = ' Chave enviada por e-mail ao cliente.';
+                }
+
+                pos_acao(
+                    count($geradas) . " licença(s) emitida(s) "
+                    . "({$t['produto_codigo']} · {$t['tier_codigo']}"
+                    . ($tipoLic === 'demo' ? ' · demonstração' : '') . ")."
+                    . $avisoMail,
+                    'ok', implode("\n", $geradas), $idsEmitidos);
+            } catch (Throwable $ex) {
+                $msg='Erro ao emitir: '.$ex->getMessage(); $tipo='erro';
+            }
+        }
+    }
 }
 
 // --- reenviar a chave por e-mail ------------------------------------
@@ -109,6 +219,7 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='revogar') {
             $msg = 'Para o motivo "Outro", descreva na observacao.';
             $tipo = 'erro';
         } else {
+            $u = usuario_logado();
             db()->prepare(
               'UPDATE licencas
                   SET status="revogada", motivo_revogacao=?, obs_revogacao=?,
@@ -206,9 +317,6 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
     if (csrf_valido()) {
         $id    = (int)$_POST['id'];
         $meses = max(1, min(60, (int)($_POST['meses_renov'] ?? 12)));
-        $vTxt  = str_replace(['.', ','], ['', '.'],
-                             trim($_POST['valor_renov'] ?? ''));
-        $vRenov = $vTxt === '' ? null : max(0, (float)$vTxt);
         $u     = usuario_logado();
 
         $lr = db()->prepare(
@@ -234,24 +342,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                       renovacoes=renovacoes+1, renovada_em=NOW()
                 WHERE id=?')->execute([$novo, $id]);
 
-            if ($vRenov !== null) {
-                db()->prepare('UPDATE licencas SET valor=? WHERE id=?')
-                    ->execute([$vRenov, $id]);
-                db()->prepare(
-                  'INSERT INTO financeiro_mov
-                     (licenca_id, tipo, valor, meses, cliente_id,
-                      revendedor_id, produto, tier, competencia, criado_por)
-                   SELECT ?, "renovacao", ?, ?, l.cliente_id, l.revendedor_id,
-                          ?, ?, DATE_FORMAT(NOW(),"%Y-%m"), ?
-                     FROM licencas l WHERE l.id = ?')
-                  ->execute([$id, $vRenov, $meses, $lrow['pc'], $lrow['tc'],
-                             $u['id'], $id]);
-            }
-
             log_acao_painel($id, $lrow['chave'], null, 'renovar', 'ok',
                 $u['id'], $u['nome'] ?? null, $lrow['pc'], $lrow['tc'],
-                "de {$lrow['expira_em']} para $novo (+{$meses}m)"
-                . ($vRenov !== null ? ' - ' . moeda($vRenov) : ''));
+                "de {$lrow['expira_em']} para $novo (+{$meses}m)");
 
             pos_acao('Licença renovada até '.date('d/m/Y', strtotime($novo))
                 . '. O cliente recebe a nova validade na próxima '
@@ -272,17 +365,29 @@ $ROTULO_MOTIVO = [
 
 $clientes = db()->query(
   'SELECT id,razao_social,nome_fantasia FROM clientes ORDER BY razao_social')->fetchAll();
+$preselect = (int)($_GET['cliente'] ?? 0);
+if ($preselect) $abrirEmissao = true;
+
+// padroes de emissao, editaveis em Configuracoes
+$padMeses    = (int)cfg('validade_padrao_meses', 12);
+$padCarencia = (int)cfg('carencia_padrao_dias', 15);
+$padDemoDias = (int)cfg('demo_validade_dias', 30);
 
 $produtos = db()->query(
   'SELECT id,codigo,nome FROM produtos WHERE ativo=1 ORDER BY codigo')->fetchAll();
 
-// usado pelo FILTRO da lista (o formulario de emissao mudou de pagina)
+// modulos vem do catalogo, nao mais escritos a mao no formulario
+$modulosCat = db()->query(
+  'SELECT m.*, p.codigo AS produto_codigo
+     FROM modulos m LEFT JOIN produtos p ON p.id=m.produto_id
+    WHERE m.ativo=1
+    ORDER BY COALESCE(p.codigo,""), m.ordem, m.codigo')->fetchAll();
 $tiers = db()->query(
   'SELECT id,produto_id,codigo,nome,nivel FROM tiers WHERE ativo=1
     ORDER BY produto_id, nivel')->fetchAll();
 
 $revendedores = db()->query(
-  "SELECT id, nome, empresa, nome_fantasia, desconto_revenda FROM usuarios
+  "SELECT id, nome, empresa, nome_fantasia FROM usuarios
     WHERE papel='revendedor' AND ativo=1
     ORDER BY COALESCE(nome_fantasia,empresa,nome)")->fetchAll();
 
@@ -508,48 +613,64 @@ function linkLic(array $novo = []) {
 $temFiltro = $fBusca!=='' || $fCliente || $fRev!=='' || $fProduto!=='' || $fTier
           || $fStatus!=='' || $fTipo!=='' || $fVenc!=='' || $fDe!=='' || $fAte!=='';
 
+/* Licenças recém-emitidas, para o card de confirmação.
+   Carregado aqui e não dentro do HTML porque o título do card precisa
+   saber a quantidade antes de renderizar. */
+$recem = [];
+if ($idsGerados) {
+    $inQ = implode(',', array_fill(0, count($idsGerados), '?'));
+    $stR = db()->prepare(
+      "SELECT l.*, c.razao_social, c.nome_fantasia,
+              p.codigo AS produto_codigo, t.nome AS tier_nome
+         FROM licencas l
+         LEFT JOIN clientes c ON c.id = l.cliente_id
+         LEFT JOIN produtos p ON p.id = l.produto_id
+         LEFT JOIN tiers    t ON t.id = l.tier_id
+        WHERE l.id IN ($inQ)
+        ORDER BY l.id");
+    $stR->execute($idsGerados);
+    $recem = $stR->fetchAll();
+}
+
 abre_pagina('Licenças', 'licencas');
 ?>
-<div style="display:flex;justify-content:space-between;align-items:flex-start;
-     gap:16px;flex-wrap:wrap">
-  <div>
-    <h1 class="titulo" style="margin-bottom:4px">Licenças</h1>
-    <p class="subtitulo">Acompanhe, renove e revogue as chaves de ativação</p>
-  </div>
-  <a class="btn" href="emitir.php" style="margin-top:6px">+ Emitir licença</a>
-</div>
+<h1 class="titulo">Licenças</h1>
+<p class="subtitulo">Emita, acompanhe, renove e revogue as chaves de ativação</p>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
 <?php if ($chaveGerada): ?>
   <div class="card">
-    <h3>Chave gerada</h3>
-    <div class="codigo"><?= e($chaveGerada) ?></div>
+    <h3><?= count($recem) > 1 ? count($recem) . ' chaves geradas' : 'Chave gerada' ?></h3>
 
-    <?php
-    // busca as licencas recem-emitidas para montar a mensagem de envio
-    $recem = [];
-    if ($idsGerados) {
-        $inQ = implode(',', array_fill(0, count($idsGerados), '?'));
-        $stR = db()->prepare(
-          "SELECT l.*, c.razao_social, c.nome_fantasia,
-                  p.codigo AS produto_codigo, t.nome AS tier_nome
-             FROM licencas l
-             LEFT JOIN clientes c ON c.id = l.cliente_id
-             LEFT JOIN produtos p ON p.id = l.produto_id
-             LEFT JOIN tiers    t ON t.id = l.tier_id
-            WHERE l.id IN ($inQ)");
-        $stR->execute($idsGerados);
-        $recem = $stR->fetchAll();
-    }
-    ?>
+    <?php if (count($recem) > 1): ?>
+      <table style="margin-top:4px">
+        <tbody>
+        <?php foreach ($recem as $i => $rl): ?>
+          <tr>
+            <td class="mono" style="width:32px;color:var(--texto-2)">
+              <?= $i + 1 ?></td>
+            <td class="mono" style="font-size:14px;letter-spacing:.5px">
+              <?= e($rl['chave']) ?></td>
+            <td style="text-align:right">
+              <?= botao_whatsapp($rl, 'u'.$rl['id'], 'Copiar') ?>
+            </td>
+          </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    <?php else: ?>
+      <div class="codigo"><?= e($chaveGerada) ?></div>
+    <?php endif; ?>
 
-    <div style="display:flex;gap:8px;margin-top:14px;flex-wrap:wrap">
+    <div style="display:flex;gap:8px;margin-top:16px;flex-wrap:wrap">
+      <?php if (count($recem) > 1): ?>
+        <?= botao_whatsapp_lote($recem) ?>
+      <?php elseif ($recem): ?>
+        <?= botao_whatsapp($recem[0], 'nova'.$recem[0]['id']) ?>
+      <?php endif; ?>
+
       <?php foreach ($recem as $rl): ?>
-        <?= botao_whatsapp($rl, 'nova'.$rl['id'],
-              count($recem) > 1
-                ? 'Copiar ' . substr($rl['chave'], -4)
-                : 'Copiar p/ WhatsApp') ?>
-        <?php if (!empty($rl['cliente_id'])): ?>
+        <?php if (!empty($rl['cliente_id']) && count($recem) === 1): ?>
           <form method="post" action="licencas.php" style="display:inline">
             <input type="hidden" name="acao" value="reenviar">
             <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
@@ -558,15 +679,176 @@ abre_pagina('Licenças', 'licencas');
           </form>
         <?php endif; ?>
       <?php endforeach; ?>
+
       <a class="btn sec" href="licencas.php">Voltar</a>
     </div>
 
     <p class="subtitulo" style="margin-top:12px">
-      O cliente digita esta chave no software (ativação online) ou você a usa
-      na aba <a href="offline.php">Ativação offline</a> se o PC dele não tiver internet.
+      <?= count($recem) > 1
+          ? 'Cada chave vale para uma máquina. Use o botão acima para enviar todas de uma vez.'
+          : 'O cliente digita esta chave no software (ativação online) ou você a usa na aba <a href="offline.php">Ativação offline</a> se o PC dele não tiver internet.' ?>
     </p>
   </div>
 <?php endif; ?>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <h3 style="margin:0">Emitir licença</h3>
+    <button type="button" class="btn" onclick="alternar('boxEmitir')">
+      + Emitir nova licença</button>
+  </div>
+  <div id="boxEmitir" style="<?= $abrirEmissao ? '' : 'display:none' ?>;margin-top:16px">
+  <form method="post">
+    <input type="hidden" name="acao" value="emitir">
+    <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+
+    <label>Destino da licença</label>
+    <div style="display:flex;gap:10px;margin-bottom:16px">
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
+             border:1px solid var(--borda);border-radius:var(--radius);
+             padding:10px 16px;flex:1" id="lblCliente">
+        <input type="radio" name="destino" value="cliente" checked
+               onchange="trocarDestino()" style="width:auto;margin:0">
+        <span>
+          <b>Cliente final</b><br>
+          <span class="subtitulo" style="margin:0;font-size:11px">
+            venda direta sua, já vinculada ao cliente</span>
+        </span>
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
+             border:1px solid var(--borda);border-radius:var(--radius);
+             padding:10px 16px;flex:1" id="lblRevenda">
+        <input type="radio" name="destino" value="revenda"
+               onchange="trocarDestino()" style="width:auto;margin:0">
+        <span>
+          <b>Revenda</b><br>
+          <span class="subtitulo" style="margin:0;font-size:11px">
+            vai para o estoque do revendedor</span>
+        </span>
+      </label>
+    </div>
+
+    <div id="boxCliente" style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
+      <div>
+        <label>Cliente final *</label>
+        <select name="cliente_id" id="selCliente">
+          <option value="">— selecione o cliente —</option>
+          <?php foreach ($clientes as $c): ?>
+            <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
+              <?= e($c['razao_social']) ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Validade</label>
+        <select name="meses">
+          <?php foreach ([1   => '1 mês (teste)',
+                          3   => '3 meses',
+                          6   => '6 meses',
+                          12  => '12 meses (1 ano)',
+                          24  => '24 meses (2 anos)',
+                          36  => '36 meses (3 anos)',
+                          48  => '48 meses (4 anos)',
+                          60  => '60 meses (5 anos)',
+                          120 => '10 anos (perpétua)'] as $mv => $mr): ?>
+            <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
+              <?= $mr ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:14px">
+      <div>
+        <label>Software *</label>
+        <select name="produto_sel" id="produto_sel" required
+                onchange="filtrarPorProduto()">
+          <option value="">— selecione —</option>
+          <?php foreach ($produtos as $p): ?>
+            <option value="<?= $p['id'] ?>" data-codigo="<?= e($p['codigo']) ?>">
+              <?= e($p['nome']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Tipo de licença *</label>
+        <select name="tier_id" id="tier_id" required disabled>
+          <option value="">— escolha o software —</option>
+          <?php foreach ($tiers as $t): ?>
+            <option value="<?= $t['id'] ?>" data-produto="<?= $t['produto_id'] ?>">
+              nível <?= (int)$t['nivel'] ?> · <?= e($t['nome']) ?>
+            </option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
+        <label>Carência (dias após expirar)</label>
+        <select name="carencia">
+          <?php foreach ([0=>'0 (bloqueia no dia)', 7=>'7 dias',
+                          15=>'15 dias', 30=>'30 dias'] as $cv => $cr): ?>
+            <option value="<?= $cv ?>" <?= $cv===$padCarencia?'selected':'' ?>>
+              <?= $cr ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+    </div>
+
+    <div id="boxRevenda" style="display:none;margin-top:14px">
+      <label>Revendedor *</label>
+      <select name="revendedor_id" id="selRevendedor">
+        <option value="">— selecione o revendedor —</option>
+        <?php foreach ($revendedores as $r): ?>
+          <option value="<?= $r['id'] ?>">
+            <?= e($r['nome_fantasia'] ?: ($r['empresa'] ?: $r['nome'])) ?>
+          </option>
+        <?php endforeach; ?>
+      </select>
+      <p class="subtitulo" style="margin:6px 0 0">
+        A licença vai para o estoque dele. O cliente final é preenchido
+        pelo próprio revendedor, quando vender.
+      </p>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px">
+      <div>
+        <label>Tipo</label>
+        <select name="tipo_licenca">
+          <option value="venda" selected>Venda</option>
+          <option value="demo">Demonstração</option>
+        </select>
+      </div>
+      <div>
+        <label>Quantidade (lote)</label>
+        <input type="number" name="quantidade" id="fQtd" value="1" min="1" max="50">
+      </div>
+    </div>
+
+    <label style="margin-top:14px">Módulos</label>
+    <div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap">
+      <?php if (!$modulosCat): ?>
+        <span class="subtitulo" style="margin:0">
+          Nenhum módulo cadastrado. Adicione em
+          <a href="catalogo.php">Catálogo</a>.
+        </span>
+      <?php else: foreach ($modulosCat as $mo): ?>
+        <label style="text-transform:none;margin:0"
+               data-produto="<?= e($mo['produto_codigo'] ?? '') ?>"
+               title="<?= e($mo['descricao'] ?? '') ?>">
+          <input type="checkbox" name="modulos[]" value="<?= e($mo['codigo']) ?>"
+                 style="width:auto"> <?= e($mo['nome']) ?>
+        </label>
+      <?php endforeach; endif; ?>
+    </div>
+
+    <div style="margin-top:16px">
+      <button class="btn">Emitir licença</button>
+      <button type="button" class="btn sec" style="margin-left:8px"
+              onclick="alternar('boxEmitir')">Cancelar</button>
+    </div>
+  </form>
+  </div>
+</div>
 
 <div class="stats">
   <div class="stat"><div class="n"><?= (int)$resumo['n'] ?></div>
@@ -872,12 +1154,6 @@ abre_pagina('Licenças', 'licencas');
                   <input type="hidden" name="acao" value="renovar">
                   <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                   <input type="hidden" name="id" value="<?= $l['id'] ?>">
-                  <div><label style="font-size:11px">Valor (R$)</label>
-                    <input name="valor_renov" inputmode="decimal"
-                           style="width:90px"
-                           placeholder="<?= $l['valor']
-                               ? number_format((float)$l['valor'],2,',','.')
-                               : 'opcional' ?>"></div>
                   <div><label style="font-size:11px">Renovar por</label>
                     <select name="meses_renov">
                       <?php foreach ([6  => '6 meses',
@@ -1063,55 +1339,6 @@ abre_pagina('Licenças', 'licencas');
 
 <?= script_copiar_licenca() ?>
 <script>
-/* Sugere o valor a partir da tabela: preco do tier proporcional aos
-   meses, menos o desconto do revendedor quando a venda e por ele.
-   O campo continua editavel - preco de software raramente sai redondo
-   da tabela, e travar faria o operador registrar errado para salvar. */
-function sugerirValor() {
-  var tier  = document.getElementById('tier_id');
-  var meses = document.querySelector('select[name=meses]');
-  var campo = document.getElementById('fValor');
-  var dica  = document.getElementById('dicaValor');
-  if (!tier || !meses || !campo) return;
-
-  var op = tier.options[tier.selectedIndex];
-  var base = op ? parseFloat(op.getAttribute('data-preco')) : NaN;
-
-  if (!base || isNaN(base)) {
-    dica.textContent = 'Sem preço de tabela para este tipo.';
-    return;
-  }
-
-  var v = base * (parseInt(meses.value, 10) / 12);
-
-  // desconto so quando o destino e revenda
-  var destino = document.querySelector('input[name=destino]:checked');
-  var desc = 0;
-  if (destino && destino.value === 'revenda') {
-    var rev = document.getElementById('selRevendedor');
-    var ro = rev && rev.selectedIndex >= 0 ? rev.options[rev.selectedIndex] : null;
-    desc = ro ? parseFloat(ro.getAttribute('data-desconto') || 0) : 0;
-    if (desc > 0) v = v * (1 - desc / 100);
-  }
-
-  var fmt = v.toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
-  dica.textContent = 'Tabela: ' + fmt + (desc > 0 ? ' (-' + desc + '% revenda)' : '');
-  if (!campo.value) campo.value = fmt;
-}
-
-document.addEventListener('DOMContentLoaded', function () {
-  ['tier_id', 'produto_sel', 'selRevendedor'].forEach(function (id) {
-    var el = document.getElementById(id);
-    if (el) el.addEventListener('change', sugerirValor);
-  });
-  var m = document.querySelector('select[name=meses]');
-  if (m) m.addEventListener('change', sugerirValor);
-  document.querySelectorAll('input[name=destino]').forEach(function (r) {
-    r.addEventListener('change', sugerirValor);
-  });
-  sugerirValor();
-});
-
 function filtrarPorProduto() {
   var prod = document.getElementById('produto_sel');
   var tier = document.getElementById('tier_id');
