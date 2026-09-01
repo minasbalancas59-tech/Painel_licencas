@@ -297,35 +297,16 @@ abre_pagina('Emitir licença', 'emitir');
       </label>
     </div>
 
-    <div id="boxCliente" style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
-      <div>
-        <label>Cliente final *</label>
-        <select name="cliente_id" id="selCliente">
-          <option value="">— selecione o cliente —</option>
-          <?php foreach ($clientes as $c): ?>
-            <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
-              <?= e($c['razao_social']) ?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div>
-        <label>Validade</label>
-        <select name="meses">
-          <?php foreach ([1   => '1 mês (teste)',
-                          3   => '3 meses',
-                          6   => '6 meses',
-                          12  => '12 meses (1 ano)',
-                          24  => '24 meses (2 anos)',
-                          36  => '36 meses (3 anos)',
-                          48  => '48 meses (4 anos)',
-                          60  => '60 meses (5 anos)',
-                          120 => '10 anos (perpétua)'] as $mv => $mr): ?>
-            <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
-              <?= $mr ?></option>
-          <?php endforeach; ?>
-        </select>
-      </div>
+    <div id="boxCliente">
+      <label>Cliente final *</label>
+      <select name="cliente_id" id="selCliente">
+        <option value="">— selecione o cliente —</option>
+        <?php foreach ($clientes as $c): ?>
+          <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
+            <?= e($c['razao_social']) ?>
+          </option>
+        <?php endforeach; ?>
+      </select>
     </div>
 
 </div>
@@ -386,9 +367,26 @@ abre_pagina('Emitir licença', 'emitir');
 
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
       <div>
+        <label>Validade</label>
+        <select name="meses">
+          <?php foreach ([1   => '1 mês (teste)',
+                          3   => '3 meses',
+                          6   => '6 meses',
+                          12  => '12 meses (1 ano)',
+                          24  => '24 meses (2 anos)',
+                          36  => '36 meses (3 anos)',
+                          48  => '48 meses (4 anos)',
+                          60  => '60 meses (5 anos)',
+                          120 => '10 anos (perpétua)'] as $mv => $mr): ?>
+            <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
+              <?= $mr ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
+      <div>
         <label>Valor cobrado (R$)</label>
         <input name="valor" id="fValor" inputmode="decimal"
-               placeholder="deixe vazio se não for registrar">
+               placeholder="0,00 para cortesia">
         <span class="subtitulo" id="dicaValor"
               style="margin:4px 0 0;display:block;font-size:11px"></span>
       </div>
@@ -433,8 +431,10 @@ abre_pagina('Emitir licença', 'emitir');
         </select>
       </div>
       <div>
-        <label>Quantidade (lote)</label>
+        <label>Quantidade</label>
         <input type="number" name="quantidade" id="fQtd" value="1" min="1" max="50">
+        <span class="subtitulo" id="dicaQtd"
+              style="margin:4px 0 0;display:block;font-size:11px"></span>
       </div>
     </div>
 
@@ -633,8 +633,18 @@ function trocarDestino() {
   document.getElementById('boxRevenda').style.display = revenda ? '' : 'none';
   document.getElementById('selCliente').required    = !revenda;
   document.getElementById('selRevendedor').required = revenda;
-  var qtd = document.getElementById('fQtd');
-  if (!revenda) { qtd.value = 1; qtd.readOnly = true; } else { qtd.readOnly = false; }
+  /* Lote livre nos dois casos.
+
+     Na revenda é o normal: você manda 10 licenças para o estoque dele.
+     Na venda direta é menos comum, mas acontece — cliente com cinco
+     balanças compra cinco de uma vez. Travar em 1 obrigaria a repetir
+     o formulário cinco vezes. */
+  var dica = document.getElementById('dicaQtd');
+  if (dica) {
+    dica.textContent = revenda
+      ? 'todas vão para o estoque dele'
+      : 'todas ficam com este cliente';
+  }
   document.getElementById('lblCliente').style.borderColor =
       revenda ? 'var(--borda)' : 'var(--ambar)';
   document.getElementById('lblRevenda').style.borderColor =
