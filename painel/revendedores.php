@@ -150,27 +150,56 @@ abre_pagina('Revendedores', 'revendedores');
     <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
 
     <h3 style="font-size:13px;margin:0 0 10px">Empresa</h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
-      <div><label>Razão social</label>
-        <input name="empresa" value="<?= $old ? v($old,'empresa') : e($busca) ?>"></div>
-      <div><label>Nome fantasia</label>
-        <input name="nome_fantasia" value="<?= v($old,'nome_fantasia') ?>"></div>
+
+    <div style="display:grid;grid-template-columns:1fr auto 2fr;gap:12px;
+         align-items:flex-end">
+      <div>
+        <label>CNPJ</label>
+        <input name="cnpj" id="rCnpj" autocomplete="off"
+               value="<?= v($old,'cnpj') ?>" placeholder="00.000.000/0000-00">
+      </div>
+      <div>
+        <button type="button" class="btn sec" onclick="buscarCnpjRev()">
+          Buscar na Receita</button>
+      </div>
+      <div>
+        <span class="subtitulo" id="rStatusCnpj"
+              style="margin:0;display:block;font-size:12px"></span>
+      </div>
     </div>
-    <div style="display:grid;grid-template-columns:1fr 1fr 2fr 1fr;gap:16px;margin-top:12px">
-      <div><label>CNPJ</label><input name="cnpj" value="<?= v($old,'cnpj') ?>"></div>
-      <div><label>Telefone</label><input name="telefone" value="<?= v($old,'telefone') ?>"></div>
-      <div><label>Município</label><input name="municipio" value="<?= v($old,'municipio') ?>"></div>
-      <div><label>UF</label><input name="uf" maxlength="2" value="<?= v($old,'uf') ?>"></div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:12px">
+      <div><label>Razão social</label>
+        <input name="empresa" id="rEmpresa" autocomplete="off"
+               value="<?= $old ? v($old,'empresa') : e($busca) ?>"></div>
+      <div><label>Nome fantasia</label>
+        <input name="nome_fantasia" id="rFantasia" autocomplete="off"
+               value="<?= v($old,'nome_fantasia') ?>"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 2fr 1fr;gap:16px;margin-top:12px">
+      <div><label>Telefone</label>
+        <input name="telefone" id="rTelefone" autocomplete="off"
+               value="<?= v($old,'telefone') ?>"></div>
+      <div><label>Município</label>
+        <input name="municipio" id="rMunicipio" autocomplete="off"
+               value="<?= v($old,'municipio') ?>"></div>
+      <div><label>UF</label>
+        <input name="uf" id="rUf" maxlength="2" autocomplete="off"
+               value="<?= v($old,'uf') ?>"></div>
     </div>
 
     <h3 style="font-size:13px;margin:18px 0 10px">Acesso ao painel</h3>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
       <div><label>Responsável *</label>
-        <input name="nome" required value="<?= v($old,'nome') ?>"></div>
+        <input name="nome" id="rNome" autocomplete="off"
+               required value="<?= v($old,'nome') ?>"></div>
       <div><label>E-mail (login) *</label>
-        <input name="email" type="email" required value="<?= v($old,'email') ?>"></div>
+        <input name="email" id="rEmail" type="email" required
+               autocomplete="new-password"
+               value="<?= v($old,'email') ?>"></div>
       <div><label>Senha inicial *</label>
-        <input name="senha" type="password" required minlength="6"></div>
+        <input name="senha" type="password" required minlength="6"
+               autocomplete="new-password"></div>
     </div>
     <div style="display:grid;grid-template-columns:1fr 3fr;gap:16px;margin-top:12px">
       <div><label>Limite de estoque</label>
@@ -249,6 +278,77 @@ abre_pagina('Revendedores', 'revendedores');
   </table>
 </div>
 
+<script>
+/* Busca o CNPJ na Receita e preenche o cadastro.
+
+   O mesmo endpoint usado no cadastro de clientes: a consulta sai do
+   servidor, não do navegador — evita CORS e permite cache de 30 dias.
+
+   Só preenche campo VAZIO. Se você já digitou o nome fantasia como
+   conhece o parceiro, a Receita não sobrescreve. */
+function buscarCnpjRev() {
+  var campo  = document.getElementById('rCnpj');
+  var status = document.getElementById('rStatusCnpj');
+  var cnpj   = (campo.value || '').replace(/\D/g, '');
+
+  if (cnpj.length !== 14) {
+    status.textContent = 'Digite os 14 dígitos do CNPJ.';
+    status.style.color = 'var(--vermelho)';
+    campo.focus();
+    return;
+  }
+
+  status.textContent = 'Consultando…';
+  status.style.color = '';
+
+  fetch('cnpj.php?cnpj=' + cnpj)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) {
+        status.textContent = j.erro || 'Não encontrado.';
+        status.style.color = 'var(--vermelho)';
+        return;
+      }
+      var d = j.dados;
+
+      function por(id, valor) {
+        var el = document.getElementById(id);
+        if (el && valor && !el.value) el.value = valor;
+      }
+      por('rEmpresa',   d.razao_social);
+      por('rFantasia',  d.nome_fantasia);
+      por('rTelefone',  d.telefone);
+      por('rMunicipio', d.municipio);
+      por('rUf',        d.uf);
+      por('rEmail',     (d.email || '').toLowerCase());
+
+      // formata o CNPJ do jeito que se lê
+      campo.value = cnpj.replace(
+        /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+
+      status.textContent = d.situacao
+        ? 'Encontrado · ' + d.situacao
+        : 'Encontrado.';
+      status.style.color = 'var(--verde)';
+    })
+    .catch(function () {
+      status.textContent = 'Falha na consulta. Preencha à mão.';
+      status.style.color = 'var(--vermelho)';
+    });
+}
+
+/* O Chrome ignora autocomplete="off" em campos de e-mail dentro de
+   formulário com senha: ele entende como tela de login e oferece a
+   credencial salva — a SUA, no caso. Limpar no carregamento resolve o
+   que o atributo não resolve. */
+document.addEventListener('DOMContentLoaded', function () {
+  setTimeout(function () {
+    var e = document.getElementById('rEmail');
+    var v = <?= json_encode(v($old, 'email')) ?>;
+    if (e && !v && e.value) e.value = '';
+  }, 120);
+});
+</script>
 <script>
 function abrirCadastro() {
   const box = document.getElementById('boxCadastro');

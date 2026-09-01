@@ -245,15 +245,25 @@ abre_pagina('Revendedor', 'revendedores');
       <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
         <div><label>Razão social</label>
-          <input name="empresa" value="<?= e($rev['empresa'] ?? '') ?>"></div>
+          <input name="empresa" id="eEmpresa" value="<?= e($rev['empresa'] ?? '') ?>"></div>
         <div><label>Nome fantasia</label>
-          <input name="nome_fantasia" value="<?= e($rev['nome_fantasia'] ?? '') ?>"></div>
+          <input name="nome_fantasia" id="eFantasia" value="<?= e($rev['nome_fantasia'] ?? '') ?>"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 2fr 1fr;gap:16px;margin-top:12px">
-        <div><label>CNPJ</label><input name="cnpj" value="<?= e($rev['cnpj'] ?? '') ?>"></div>
-        <div><label>Telefone</label><input name="telefone" value="<?= e($rev['telefone'] ?? '') ?>"></div>
-        <div><label>Município</label><input name="municipio" value="<?= e($rev['municipio'] ?? '') ?>"></div>
-        <div><label>UF</label><input name="uf" maxlength="2" value="<?= e($rev['uf'] ?? '') ?>"></div>
+        <div>
+          <label>CNPJ</label>
+          <div style="display:flex;gap:6px">
+            <input name="cnpj" id="eCnpj" style="flex:1"
+                   value="<?= e($rev['cnpj'] ?? '') ?>">
+            <button type="button" class="btn sec pequeno"
+                    onclick="buscarCnpjEdit()">Receita</button>
+          </div>
+          <span class="subtitulo" id="eStatusCnpj"
+                style="margin:4px 0 0;display:block;font-size:11px"></span>
+        </div>
+        <div><label>Telefone</label><input name="telefone" id="eTelefone" value="<?= e($rev['telefone'] ?? '') ?>"></div>
+        <div><label>Município</label><input name="municipio" id="eMunicipio" value="<?= e($rev['municipio'] ?? '') ?>"></div>
+        <div><label>UF</label><input name="uf" id="eUf" maxlength="2" value="<?= e($rev['uf'] ?? '') ?>"></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:16px;margin-top:12px">
         <div><label>Responsável *</label>
@@ -597,6 +607,53 @@ abre_pagina('Revendedor', 'revendedores');
   </table>
 </div>
 
+<script>
+/* Mesma busca do cadastro novo, mas aqui o campo já pode estar
+   preenchido — então a Receita SOBRESCREVE. Quem clica no botão numa
+   ficha existente quer atualizar o cadastro com o dado oficial. */
+function buscarCnpjEdit() {
+  var campo  = document.getElementById('eCnpj');
+  var status = document.getElementById('eStatusCnpj');
+  var cnpj   = (campo.value || '').replace(/\D/g, '');
+
+  if (cnpj.length !== 14) {
+    status.textContent = 'Digite os 14 dígitos do CNPJ.';
+    status.style.color = 'var(--vermelho)';
+    return;
+  }
+  status.textContent = 'Consultando…';
+  status.style.color = '';
+
+  fetch('cnpj.php?cnpj=' + cnpj)
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) {
+        status.textContent = j.erro || 'Não encontrado.';
+        status.style.color = 'var(--vermelho)';
+        return;
+      }
+      var d = j.dados;
+      function por(id, v) {
+        var el = document.getElementById(id);
+        if (el && v) el.value = v;
+      }
+      por('eEmpresa',   d.razao_social);
+      por('eFantasia',  d.nome_fantasia);
+      por('eTelefone',  d.telefone);
+      por('eMunicipio', d.municipio);
+      por('eUf',        d.uf);
+
+      campo.value = cnpj.replace(
+        /^(\d{2})(\d{3})(\d{3})(\d{4})(\d{2})$/, '$1.$2.$3/$4-$5');
+      status.textContent = 'Atualizado com os dados da Receita. Salve para gravar.';
+      status.style.color = 'var(--verde)';
+    })
+    .catch(function () {
+      status.textContent = 'Falha na consulta.';
+      status.style.color = 'var(--vermelho)';
+    });
+}
+</script>
 <script>
 function alternar(id) {
   const el = document.getElementById(id);
