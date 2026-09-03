@@ -464,6 +464,17 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                               trim($_POST['valor_renov'] ?? ''));
         $vRenov = $vTxt === '' ? null : max(0, (float)$vTxt);
 
+        /* Troca de tipo junto com a renovação.
+
+           Vazio = mantém o tipo atual. O upgrade gera movimento
+           financeiro PRÓPRIO, separado da renovação: são duas vendas
+           diferentes e misturá-las esconderia quanto você fatura de
+           upgrade. */
+        $novoTier = (int)($_POST['tier_novo'] ?? 0);
+        $vUpTxt = str_replace(['.', ','], ['', '.'],
+                              trim($_POST['valor_upgrade'] ?? ''));
+        $vUpgrade = $vUpTxt === '' ? null : max(0, (float)$vUpTxt);
+
         if ($mesesTxt === '' || $meses <= 0 || $meses > 60)
             pos_acao('Escolha por quantos meses renovar.', 'erro');
         if ($vTxt === '')
@@ -499,6 +510,54 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                       renovacoes=renovacoes+1, renovada_em=NOW()
                 WHERE id=?')->execute([$novo, $id]);
 
+            /* ---- troca de tipo, quando pedida ---------------------- */
+            $tierAntes = null; $tierDepois = null;
+            if ($novoTier > 0) {
+                $stT = db()->prepare(
+                  'SELECT t.id, t.nome, t.codigo, t.produto_id
+                     FROM tiers t WHERE t.id=? AND t.ativo=1');
+                $stT->execute([$novoTier]);
+                $tn = $stT->fetch();
+
+                $stA = db()->prepare(
+                  'SELECT t.nome, t.codigo, l.produto_id
+                     FROM licencas l LEFT JOIN tiers t ON t.id=l.tier_id
+                    WHERE l.id=?');
+                $stA->execute([$id]);
+                $ta = $stA->fetch();
+
+                /* O tipo tem de ser do MESMO software: um tier do TS5
+                   numa licença TS6 deixaria o nível sem sentido, e o
+                   Delphi liberaria recursos errados. */
+                if ($tn && $ta && (int)$tn['produto_id'] === (int)$ta['produto_id']) {
+                    db()->prepare('UPDATE licencas SET tier_id=? WHERE id=?')
+                        ->execute([$novoTier, $id]);
+                    $tierAntes  = $ta['nome'] ?? '(sem tipo)';
+                    $tierDepois = $tn['nome'];
+
+                    if ($vUpgrade !== null) {
+                        db()->prepare(
+                          'INSERT INTO financeiro_mov
+                             (licenca_id, tipo, valor, meses, cliente_id,
+                              revendedor_id, produto, tier, competencia,
+                              observacao, criado_por)
+                           SELECT ?, "ajuste", ?, NULL, l.cliente_id,
+                                  l.revendedor_id, ?, ?,
+                                  DATE_FORMAT(NOW(),"%Y-%m"), ?, ?
+                             FROM licencas l WHERE l.id = ?')
+                          ->execute([$id, $vUpgrade, $lrow['pc'],
+                                     $tn['codigo'],
+                                     'upgrade: ' . $tierAntes . ' -> ' . $tierDepois,
+                                     $u['id'], $id]);
+                    }
+
+                    log_acao_painel($id, $lrow['chave'], null, 'editar', 'ok',
+                        $u['id'], $u['nome'] ?? null, $lrow['pc'], $tn['codigo'],
+                        'tipo alterado: ' . $tierAntes . ' -> ' . $tierDepois
+                        . ($vUpgrade !== null ? ' - ' . moeda($vUpgrade) : ''));
+                }
+            }
+
             if ($vRenov !== null) {
                 db()->prepare('UPDATE licencas SET valor=? WHERE id=?')
                     ->execute([$vRenov, $id]);
@@ -519,10 +578,13 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                 . ($vRenov !== null ? ' - ' . moeda($vRenov) : ''));
 
             $antes = date('d/m/Y', strtotime($lrow['expira_em']));
-            pos_acao('Licença renovada: ' . $antes . ' → '
-                . date('d/m/Y', strtotime($novo))
-                . '. O cliente recebe a nova validade na próxima '
-                . 'revalidação (até 7 dias).', 'ok');
+            $txt = 'Licença renovada: ' . $antes . ' → '
+                 . date('d/m/Y', strtotime($novo));
+            if ($tierDepois)
+                $txt .= '. Tipo alterado: ' . $tierAntes . ' → ' . $tierDepois;
+            $txt .= '. O cliente recebe as mudanças na próxima '
+                  . 'revalidação (até 7 dias).';
+            pos_acao($txt, 'ok');
         }
     }
 }
@@ -1181,6 +1243,22 @@ abre_pagina('Licenças', 'licencas');
                            placeholder="<?= $l['valor']
                                ? number_format((float)$l['valor'],2,',','.')
                                : 'opcional' ?>"></div>
+                  <div><label style="font-size:11px">Trocar tipo</label>
+                    <select name="tier_novo" style="width:120px"
+                            onchange="mostrarUpgrade(this)">
+                      <option value="">— manter —</option>
+                      <?php foreach ($tiers as $t):
+                          if ((int)$t['produto_id'] !== (int)$l['produto_id']) continue;
+                          if ((int)$t['id'] === (int)$l['tier_id']) continue;
+                      ?>
+                        <option value="<?= $t['id'] ?>">
+                          <?= e($t['nome']) ?></option>
+                      <?php endforeach; ?>
+                    </select></div>
+                  <div class="boxUpgrade" style="display:none">
+                    <label style="font-size:11px">Valor do upgrade</label>
+                    <input name="valor_upgrade" inputmode="decimal"
+                           style="width:90px" placeholder="0,00"></div>
                   <div><label style="font-size:11px">Renovar por</label>
                     <select name="meses_renov" required>
                       <option value="">— por quanto? —</option>
@@ -1366,6 +1444,13 @@ abre_pagina('Licenças', 'licencas');
 
 <?= script_copiar_licenca() ?>
 <script>
+/* O valor do upgrade só aparece quando há troca de tipo: um campo a
+   mais em toda renovação seria ruído, já que a troca é a exceção. */
+function mostrarUpgrade(sel) {
+  var box = sel.closest('div').parentElement.querySelector('.boxUpgrade');
+  if (box) box.style.display = sel.value ? '' : 'none';
+}
+
 function filtrarPorProduto() {
   var prod = document.getElementById('produto_sel');
   var tier = document.getElementById('tier_id');
