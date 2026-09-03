@@ -312,12 +312,157 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='editar') {
     }
 }
 
+// --- reenviar a chave por e-mail ------------------------------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='reenviar') {
+    if (csrf_valido()) {
+        $stE = db()->prepare(
+          'SELECT l.*, c.razao_social, c.nome_fantasia,
+                  p.codigo AS produto_codigo
+             FROM licencas l
+             LEFT JOIN clientes c ON c.id=l.cliente_id
+             LEFT JOIN produtos p ON p.id=l.produto_id
+            WHERE l.id = ?');
+        $stE->execute([(int)$_POST['id']]);
+        $rowE = $stE->fetch();
+        if (!$rowE) pos_acao('Licença não encontrada.', 'erro');
+        list($n, $txt) = enviar_licenca_email($rowE);
+        pos_acao($txt, $n > 0 ? 'ok' : 'erro');
+    }
+}
+
+// --- revogar --------------------------------------------------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='revogar') {
+    if (csrf_valido()) {
+        $id = (int)$_POST['id'];
+
+        // motivo e obrigatorio: revogar sem registrar o porque deixa o
+        // suporte sem resposta quando o cliente liga perguntando
+        $motivosOk = ['inadimplencia','cancelamento','troca_licenca',
+                      'uso_indevido','erro_emissao','outro'];
+        $motivo = $_POST['motivo_revogacao'] ?? '';
+        $obs    = trim($_POST['obs_revogacao'] ?? '');
+
+        if (!in_array($motivo, $motivosOk, true)) {
+            $msg = 'Selecione o motivo da revogacao.'; $tipo = 'erro';
+        } elseif ($motivo === 'outro' && $obs === '') {
+            $msg = 'Para o motivo "Outro", descreva na observacao.';
+            $tipo = 'erro';
+        } else {
+            $u = usuario_logado();
+            db()->prepare(
+              'UPDATE licencas
+                  SET status="revogada", motivo_revogacao=?, obs_revogacao=?,
+                      revogada_em=NOW(), revogada_por=?
+                WHERE id=?')->execute([$motivo, ($obs ?: null), $u['id'], $id]);
+
+            // produto/tier da licenca, para registrar no log
+            $lr = db()->prepare(
+              'SELECT l.chave, p.codigo AS pc, t.codigo AS tc
+                 FROM licencas l
+                 LEFT JOIN produtos p ON p.id=l.produto_id
+                 LEFT JOIN tiers t    ON t.id=l.tier_id
+                WHERE l.id=?');
+            $lr->execute([$id]);
+            $lrow = $lr->fetch() ?: [];
+
+            log_acao_painel(
+                $id, $lrow['chave'] ?? null, null, 'revogar', 'ok',
+                $u['id'], $u['nome'] ?? null,
+                $lrow['pc'] ?? null, $lrow['tc'] ?? null,
+                'motivo: '.$motivo.($obs ? ' - '.$obs : ''));
+
+            pos_acao('Licença revogada.', 'ok');
+        }
+    }
+}
+
+
+// --- editar (somente campos fora do payload assinado) ---------------
+if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='editar') {
+    if (csrf_valido()) {
+        $id  = (int)$_POST['id'];
+        $u   = usuario_logado();
+        $novoCli = (int)($_POST['cliente_id'] ?? 0) ?: null;
+        $novoRev = (int)($_POST['revendedor_id'] ?? 0) ?: null;
+        $maxT    = max(0, min(99, (int)($_POST['max_transferencias'] ?? 3)));
+        $obs     = trim($_POST['observacao'] ?? '');
+
+        // Le o estado ANTES de alterar, para registrar o que de fato
+        // mudou. "Cadastro alterado" sem dizer o que mudou nao serve
+        // para nada quando alguem for auditar dali a seis meses.
+        $ant = db()->prepare(
+          'SELECT l.chave, l.cliente_id, l.revendedor_id,
+                  l.max_transferencias, l.observacao,
+                  c.razao_social, u.nome AS rev_nome
+             FROM licencas l
+             LEFT JOIN clientes c ON c.id = l.cliente_id
+             LEFT JOIN usuarios u ON u.id = l.revendedor_id
+            WHERE l.id = ?');
+        $ant->execute([$id]);
+        $ant = $ant->fetch() ?: [];
+
+        db()->prepare(
+          'UPDATE licencas
+              SET cliente_id=?, revendedor_id=?, max_transferencias=?, observacao=?
+            WHERE id=?')->execute([$novoCli, $novoRev, $maxT, ($obs ?: null), $id]);
+
+        $mudou = [];
+        if ((int)($ant['cliente_id'] ?? 0) !== (int)$novoCli) {
+            $de = $ant['razao_social'] ?? 'sem cliente';
+            $paraNome = 'sem cliente';
+            if ($novoCli) {
+                $q = db()->prepare('SELECT razao_social FROM clientes WHERE id=?');
+                $q->execute([$novoCli]);
+                $paraNome = $q->fetchColumn() ?: ('id ' . $novoCli);
+            }
+            $mudou[] = "cliente: $de -> $paraNome";
+        }
+        if ((int)($ant['revendedor_id'] ?? 0) !== (int)$novoRev) {
+            $de = $ant['rev_nome'] ?? 'venda direta';
+            $paraNome = 'venda direta';
+            if ($novoRev) {
+                $q = db()->prepare('SELECT nome FROM usuarios WHERE id=?');
+                $q->execute([$novoRev]);
+                $paraNome = $q->fetchColumn() ?: ('id ' . $novoRev);
+            }
+            $mudou[] = "revendedor: $de -> $paraNome";
+        }
+        if ((int)($ant['max_transferencias'] ?? 3) !== $maxT)
+            $mudou[] = 'limite de transferencias: '
+                     . (int)($ant['max_transferencias'] ?? 3) . " -> $maxT";
+        if (trim((string)($ant['observacao'] ?? '')) !== $obs)
+            $mudou[] = 'anotacao alterada';
+
+        log_acao_painel($id, $ant['chave'] ?? null, null, 'editar', 'ok',
+            $u['id'], $u['nome'] ?? null, null, null,
+            $mudou ? mb_substr(implode('; ', $mudou), 0, 255)
+                   : 'salvo sem alteracao');
+        pos_acao('Licença atualizada.', 'ok');
+    }
+}
+
 // --- renovar --------------------------------------------------------
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
     if (csrf_valido()) {
         $id    = (int)$_POST['id'];
-        $meses = max(1, min(60, (int)($_POST['meses_renov'] ?? 12)));
         $u     = usuario_logado();
+
+        /* Sem padrão nos dois campos.
+           Renovar por 12 meses porque ninguém escolheu é erro que só
+           aparece quando o cliente reclama da data. E valor vazio deixa
+           a renovação fora da receita do mês sem ninguém notar. */
+        $mesesTxt = trim($_POST['meses_renov'] ?? '');
+        $meses    = (int)$mesesTxt;
+
+        $vTxt   = str_replace(['.', ','], ['', '.'],
+                              trim($_POST['valor_renov'] ?? ''));
+        $vRenov = $vTxt === '' ? null : max(0, (float)$vTxt);
+
+        if ($mesesTxt === '' || $meses <= 0 || $meses > 60)
+            pos_acao('Escolha por quantos meses renovar.', 'erro');
+        if ($vTxt === '')
+            pos_acao('Informe o valor da renovação. Use 0,00 se for cortesia.',
+                     'erro');
 
         $lr = db()->prepare(
           'SELECT l.chave, l.expira_em, p.codigo AS pc, t.codigo AS tc
@@ -342,9 +487,24 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                       renovacoes=renovacoes+1, renovada_em=NOW()
                 WHERE id=?')->execute([$novo, $id]);
 
+            if ($vRenov !== null) {
+                db()->prepare('UPDATE licencas SET valor=? WHERE id=?')
+                    ->execute([$vRenov, $id]);
+                db()->prepare(
+                  'INSERT INTO financeiro_mov
+                     (licenca_id, tipo, valor, meses, cliente_id,
+                      revendedor_id, produto, tier, competencia, criado_por)
+                   SELECT ?, "renovacao", ?, ?, l.cliente_id, l.revendedor_id,
+                          ?, ?, DATE_FORMAT(NOW(),"%Y-%m"), ?
+                     FROM licencas l WHERE l.id = ?')
+                  ->execute([$id, $vRenov, $meses, $lrow['pc'], $lrow['tc'],
+                             $u['id'], $id]);
+            }
+
             log_acao_painel($id, $lrow['chave'], null, 'renovar', 'ok',
                 $u['id'], $u['nome'] ?? null, $lrow['pc'], $lrow['tc'],
-                "de {$lrow['expira_em']} para $novo (+{$meses}m)");
+                "de {$lrow['expira_em']} para $novo (+{$meses}m)"
+                . ($vRenov !== null ? ' - ' . moeda($vRenov) : ''));
 
             pos_acao('Licença renovada até '.date('d/m/Y', strtotime($novo))
                 . '. O cliente recebe a nova validade na próxima '
@@ -634,8 +794,14 @@ if ($idsGerados) {
 
 abre_pagina('Licenças', 'licencas');
 ?>
-<h1 class="titulo">Licenças</h1>
-<p class="subtitulo">Emita, acompanhe, renove e revogue as chaves de ativação</p>
+<div style="display:flex;justify-content:space-between;align-items:flex-start;
+     gap:16px;flex-wrap:wrap">
+  <div>
+    <h1 class="titulo" style="margin-bottom:4px">Licenças</h1>
+    <p class="subtitulo">Acompanhe, renove e revogue as chaves de ativação</p>
+  </div>
+  <a class="btn" href="emitir.php" style="margin-top:6px">+ Emitir licença</a>
+</div>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
 <?php if ($chaveGerada): ?>
@@ -690,165 +856,6 @@ abre_pagina('Licenças', 'licencas');
     </p>
   </div>
 <?php endif; ?>
-
-<div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:center">
-    <h3 style="margin:0">Emitir licença</h3>
-    <button type="button" class="btn" onclick="alternar('boxEmitir')">
-      + Emitir nova licença</button>
-  </div>
-  <div id="boxEmitir" style="<?= $abrirEmissao ? '' : 'display:none' ?>;margin-top:16px">
-  <form method="post">
-    <input type="hidden" name="acao" value="emitir">
-    <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-
-    <label>Destino da licença</label>
-    <div style="display:flex;gap:10px;margin-bottom:16px">
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
-             border:1px solid var(--borda);border-radius:var(--radius);
-             padding:10px 16px;flex:1" id="lblCliente">
-        <input type="radio" name="destino" value="cliente" checked
-               onchange="trocarDestino()" style="width:auto;margin:0">
-        <span>
-          <b>Cliente final</b><br>
-          <span class="subtitulo" style="margin:0;font-size:11px">
-            venda direta sua, já vinculada ao cliente</span>
-        </span>
-      </label>
-      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;
-             border:1px solid var(--borda);border-radius:var(--radius);
-             padding:10px 16px;flex:1" id="lblRevenda">
-        <input type="radio" name="destino" value="revenda"
-               onchange="trocarDestino()" style="width:auto;margin:0">
-        <span>
-          <b>Revenda</b><br>
-          <span class="subtitulo" style="margin:0;font-size:11px">
-            vai para o estoque do revendedor</span>
-        </span>
-      </label>
-    </div>
-
-    <div id="boxCliente" style="display:grid;grid-template-columns:2fr 1fr;gap:16px">
-      <div>
-        <label>Cliente final *</label>
-        <select name="cliente_id" id="selCliente">
-          <option value="">— selecione o cliente —</option>
-          <?php foreach ($clientes as $c): ?>
-            <option value="<?= $c['id'] ?>" <?= $preselect===(int)$c['id']?'selected':'' ?>>
-              <?= e($c['razao_social']) ?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div>
-        <label>Validade</label>
-        <select name="meses">
-          <?php foreach ([1   => '1 mês (teste)',
-                          3   => '3 meses',
-                          6   => '6 meses',
-                          12  => '12 meses (1 ano)',
-                          24  => '24 meses (2 anos)',
-                          36  => '36 meses (3 anos)',
-                          48  => '48 meses (4 anos)',
-                          60  => '60 meses (5 anos)',
-                          120 => '10 anos (perpétua)'] as $mv => $mr): ?>
-            <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
-              <?= $mr ?></option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:14px">
-      <div>
-        <label>Software *</label>
-        <select name="produto_sel" id="produto_sel" required
-                onchange="filtrarPorProduto()">
-          <option value="">— selecione —</option>
-          <?php foreach ($produtos as $p): ?>
-            <option value="<?= $p['id'] ?>" data-codigo="<?= e($p['codigo']) ?>">
-              <?= e($p['nome']) ?></option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div>
-        <label>Tipo de licença *</label>
-        <select name="tier_id" id="tier_id" required disabled>
-          <option value="">— escolha o software —</option>
-          <?php foreach ($tiers as $t): ?>
-            <option value="<?= $t['id'] ?>" data-produto="<?= $t['produto_id'] ?>">
-              nível <?= (int)$t['nivel'] ?> · <?= e($t['nome']) ?>
-            </option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-      <div>
-        <label>Carência (dias após expirar)</label>
-        <select name="carencia">
-          <?php foreach ([0=>'0 (bloqueia no dia)', 7=>'7 dias',
-                          15=>'15 dias', 30=>'30 dias'] as $cv => $cr): ?>
-            <option value="<?= $cv ?>" <?= $cv===$padCarencia?'selected':'' ?>>
-              <?= $cr ?></option>
-          <?php endforeach; ?>
-        </select>
-      </div>
-    </div>
-
-    <div id="boxRevenda" style="display:none;margin-top:14px">
-      <label>Revendedor *</label>
-      <select name="revendedor_id" id="selRevendedor">
-        <option value="">— selecione o revendedor —</option>
-        <?php foreach ($revendedores as $r): ?>
-          <option value="<?= $r['id'] ?>">
-            <?= e($r['nome_fantasia'] ?: ($r['empresa'] ?: $r['nome'])) ?>
-          </option>
-        <?php endforeach; ?>
-      </select>
-      <p class="subtitulo" style="margin:6px 0 0">
-        A licença vai para o estoque dele. O cliente final é preenchido
-        pelo próprio revendedor, quando vender.
-      </p>
-    </div>
-
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:14px">
-      <div>
-        <label>Tipo</label>
-        <select name="tipo_licenca">
-          <option value="venda" selected>Venda</option>
-          <option value="demo">Demonstração</option>
-        </select>
-      </div>
-      <div>
-        <label>Quantidade (lote)</label>
-        <input type="number" name="quantidade" id="fQtd" value="1" min="1" max="50">
-      </div>
-    </div>
-
-    <label style="margin-top:14px">Módulos</label>
-    <div style="display:flex;gap:20px;margin-top:6px;flex-wrap:wrap">
-      <?php if (!$modulosCat): ?>
-        <span class="subtitulo" style="margin:0">
-          Nenhum módulo cadastrado. Adicione em
-          <a href="catalogo.php">Catálogo</a>.
-        </span>
-      <?php else: foreach ($modulosCat as $mo): ?>
-        <label style="text-transform:none;margin:0"
-               data-produto="<?= e($mo['produto_codigo'] ?? '') ?>"
-               title="<?= e($mo['descricao'] ?? '') ?>">
-          <input type="checkbox" name="modulos[]" value="<?= e($mo['codigo']) ?>"
-                 style="width:auto"> <?= e($mo['nome']) ?>
-        </label>
-      <?php endforeach; endif; ?>
-    </div>
-
-    <div style="margin-top:16px">
-      <button class="btn">Emitir licença</button>
-      <button type="button" class="btn sec" style="margin-left:8px"
-              onclick="alternar('boxEmitir')">Cancelar</button>
-    </div>
-  </form>
-  </div>
-</div>
 
 <div class="stats">
   <div class="stat"><div class="n"><?= (int)$resumo['n'] ?></div>
@@ -1154,16 +1161,22 @@ abre_pagina('Licenças', 'licencas');
                   <input type="hidden" name="acao" value="renovar">
                   <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                   <input type="hidden" name="id" value="<?= $l['id'] ?>">
+<div><label style="font-size:11px">Valor (R$)</label>
+                    <input name="valor_renov" inputmode="decimal" required
+                           style="width:90px"
+                           placeholder="<?= $l['valor']
+                               ? number_format((float)$l['valor'],2,',','.')
+                               : 'opcional' ?>"></div>
                   <div><label style="font-size:11px">Renovar por</label>
-                    <select name="meses_renov">
+                    <select name="meses_renov" required>
+                      <option value="">— por quanto? —</option>
                       <?php foreach ([6  => '6 meses',
                                       12 => '12 meses',
                                       24 => '24 meses',
                                       36 => '36 meses',
                                       48 => '48 meses',
                                       60 => '60 meses'] as $rv => $rr): ?>
-                        <option value="<?= $rv ?>"
-                          <?= $rv === 12 ? 'selected' : '' ?>><?= $rr ?></option>
+                        <option value="<?= $rv ?>"><?= $rr ?></option>
                       <?php endforeach; ?>
                     </select></div>
                   <button class="btn pequeno">Renovar</button>

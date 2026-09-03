@@ -52,7 +52,11 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         $tierId   = (int)($_POST['tier_id'] ?? 0);
         // teto de 240 meses (20 anos): sem limite, um valor absurdo
         // vindo do formulario geraria data invalida no strtotime
-        $meses    = max(1, min(240, (int)($_POST['meses'] ?? 12)));
+        // Sem padrao: o campo e obrigatorio na tela, e aqui recusamos
+        // vazio em vez de assumir 12 meses. Assumir um valor faria uma
+        // licenca sair com prazo que ninguem escolheu.
+        $mesesTxt = trim($_POST['meses'] ?? '');
+        $meses    = (int)$mesesTxt;
         // vem como "1.234,56" do formulario brasileiro
         $valorTxt = str_replace(['.', ','], ['', '.'],
                                 trim($_POST['valor'] ?? ''));
@@ -73,7 +77,8 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         if ($destino === 'revenda') { $cliId = 0; }
         else                        { $revId = null; }
         $tipoLic  = ($_POST['tipo_licenca'] ?? 'venda') === 'demo' ? 'demo' : 'venda';
-        $qtd      = max(1, min(50, (int)($_POST['quantidade'] ?? 1)));
+        $qtdTxt   = trim($_POST['quantidade'] ?? '');
+        $qtd      = (int)$qtdTxt;
         // so aceita codigos que existem e estao ativos no catalogo
         $validos = db()->query(
           'SELECT codigo FROM modulos WHERE ativo=1')->fetchAll(PDO::FETCH_COLUMN);
@@ -89,7 +94,20 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
         } elseif ($destino === 'revenda' && !$revId) {
             $msg='Para revenda, selecione o revendedor.'; $tipo='erro';
         }
-        elseif ($meses<=0)     { $msg='Validade inválida.'; $tipo='erro'; }
+        elseif ($mesesTxt === '' || $meses <= 0) {
+            $msg = 'Escolha a validade da licença.'; $tipo='erro';
+        } elseif ($meses > 240) {
+            $msg = 'Validade máxima: 240 meses.'; $tipo='erro';
+        } elseif ($qtdTxt === '' || $qtd <= 0) {
+            $msg = 'Informe a quantidade de licenças.'; $tipo='erro';
+        } elseif ($qtd > 50) {
+            $msg = 'Máximo de 50 licenças por emissão.'; $tipo='erro';
+        } elseif ($valorTxt === '') {
+            // Zero é aceito e significa cortesia; vazio significa
+            // "esqueci de preencher" — e a licença ficaria fora da
+            // receita e da previsão de renovação sem ninguém notar.
+            $msg = 'Informe o valor. Use 0,00 se for cortesia.'; $tipo='erro';
+        }
         else {
             try {
                 // resolve produto/tier/nivel a partir do tier escolhido
@@ -367,8 +385,9 @@ abre_pagina('Emitir licença', 'emitir');
 
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px">
       <div>
-        <label>Validade</label>
-        <select name="meses">
+        <label>Validade *</label>
+        <select name="meses" required>
+          <option value="">— selecione —</option>
           <?php foreach ([1   => '1 mês (teste)',
                           3   => '3 meses',
                           6   => '6 meses',
@@ -378,14 +397,13 @@ abre_pagina('Emitir licença', 'emitir');
                           48  => '48 meses (4 anos)',
                           60  => '60 meses (5 anos)',
                           120 => '10 anos (perpétua)'] as $mv => $mr): ?>
-            <option value="<?= $mv ?>" <?= $mv===$padMeses?'selected':'' ?>>
-              <?= $mr ?></option>
+            <option value="<?= $mv ?>"><?= $mr ?></option>
           <?php endforeach; ?>
         </select>
       </div>
       <div>
-        <label>Valor por licença (R$)</label>
-        <input name="valor" id="fValor" inputmode="decimal"
+        <label>Valor por licença (R$) *</label>
+        <input name="valor" id="fValor" inputmode="decimal" required
                placeholder="0,00 para cortesia">
         <span class="subtitulo" id="dicaValor"
               style="margin:4px 0 0;display:block;font-size:11px"></span>
@@ -431,9 +449,9 @@ abre_pagina('Emitir licença', 'emitir');
         </select>
       </div>
       <div>
-        <label>Quantidade</label>
-        <input type="number" name="quantidade" id="fQtd" value="1" min="1"
-               max="50" oninput="mostrarTotal()">
+        <label>Quantidade *</label>
+        <input type="number" name="quantidade" id="fQtd" value="" min="1"
+               max="50" required placeholder="quantas?" oninput="mostrarTotal()">
         <span class="subtitulo" id="dicaQtd"
               style="margin:4px 0 0;display:block;font-size:11px"></span>
         <span id="totalLote" style="margin:4px 0 0;display:block;font-size:12px;
@@ -578,7 +596,9 @@ function trocarModelo() {
   } else {
     for (var j = 0; j < meses.options.length; j++)
       meses.options[j].disabled = false;
-    if (meses.value === '120') meses.value = '12';
+    // volta ao vazio, não a 12: o campo é obrigatório e deve ser
+    // escolhido a cada emissão
+    if (meses.value === '120') meses.value = '';
   }
 
   sugerirValor();
