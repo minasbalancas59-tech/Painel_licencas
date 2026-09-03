@@ -63,6 +63,25 @@ if (!empty($_SESSION['flash'])) {
     unset($_SESSION['flash']);
 }
 
+$renov = null;
+if (!empty($_SESSION['renov'])) {
+    $r = $_SESSION['renov'];
+    unset($_SESSION['renov']);
+    $stRv = db()->prepare(
+      "SELECT l.*, c.razao_social, c.nome_fantasia,
+              p.codigo AS produto_codigo, t.nome AS tier_nome
+         FROM licencas l
+         LEFT JOIN clientes c ON c.id = l.cliente_id
+         LEFT JOIN produtos p ON p.id = l.produto_id
+         LEFT JOIN tiers    t ON t.id = l.tier_id
+        WHERE l.id = ?");
+    $stRv->execute([$r['id']]);
+    if ($lRv = $stRv->fetch())
+        $renov = ['lic' => $lRv,
+                  'validade_ant' => $r['validade_ant'],
+                  'tier_antes'   => $r['tier_antes']];
+}
+
 // --- emitir nova licenca (v2: produto + tier) ----------------------
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='emitir') {
     if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
@@ -577,6 +596,15 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                 "de {$lrow['expira_em']} para $novo (+{$meses}m)"
                 . ($vRenov !== null ? ' - ' . moeda($vRenov) : ''));
 
+            /* Guarda o que mudou para o card de confirmação montar a
+               mensagem ao cliente. Vai pela sessão porque o
+               POST/Redirect/GET perde o POST. */
+            $_SESSION['renov'] = [
+                'id'          => $id,
+                'validade_ant'=> $lrow['expira_em'],
+                'tier_antes'  => $tierAntes ?: '',
+            ];
+
             $antes = date('d/m/Y', strtotime($lrow['expira_em']));
             $txt = 'Licença renovada: ' . $antes . ' → '
                  . date('d/m/Y', strtotime($novo));
@@ -880,6 +908,40 @@ abre_pagina('Licenças', 'licencas');
 </div>
 
 <?php if ($msg): ?><div class="aviso <?= $tipo ?>"><?= e($msg) ?></div><?php endif; ?>
+
+<?php if ($renov): ?>
+  <div class="card" style="border-left:3px solid var(--verde)">
+    <div style="display:flex;justify-content:space-between;align-items:center;
+         gap:16px;flex-wrap:wrap">
+      <div>
+        <h3 style="margin:0 0 4px">Avisar o cliente</h3>
+        <p class="subtitulo" style="margin:0">
+          <?= e($renov['lic']['nome_fantasia']
+                ?: $renov['lic']['razao_social'] ?: 'sem cliente') ?>
+          · nova validade
+          <b><?= date('d/m/Y', strtotime($renov['lic']['expira_em'])) ?></b>
+        </p>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <?= botao_whatsapp_renovacao($renov['lic'],
+              $renov['validade_ant'], $renov['tier_antes']) ?>
+        <?php if (!empty($renov['lic']['cliente_id'])): ?>
+          <form method="post" style="display:inline">
+            <input type="hidden" name="acao" value="reenviar">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <input type="hidden" name="id" value="<?= $renov['lic']['id'] ?>">
+            <button class="btn sec">Reenviar por e-mail</button>
+          </form>
+        <?php endif; ?>
+      </div>
+    </div>
+    <p class="subtitulo" style="margin:10px 0 0;font-size:11px">
+      A mensagem já explica que a validade nova chega sozinha em até 7
+      dias — é o que evita o cliente ligar dizendo que a tela mostra a
+      data antiga.
+    </p>
+  </div>
+<?php endif; ?>
 <?php if ($chaveGerada): ?>
   <div class="card">
     <h3><?= count($recem) > 1 ? count($recem) . ' chaves geradas' : 'Chave gerada' ?></h3>

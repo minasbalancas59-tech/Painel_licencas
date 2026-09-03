@@ -237,6 +237,77 @@ function botao_whatsapp_lote(array $lics, string $rotulo = ''): string {
          . $rotulo . '</button>';
 }
 
+
+/**
+ * Mensagem de RENOVAÇÃO.
+ *
+ * Texto próprio, não o de emissão: o cliente já tem o sistema
+ * instalado e não vai ativar nada. O que ele precisa saber é a
+ * validade nova e que ela chega sozinha — sem isso, liga perguntando
+ * por que a tela ainda mostra a data antiga.
+ *
+ * @param array  $lic         licença com os JOINs resolvidos
+ * @param string $validadeAnt data anterior, formato Y-m-d
+ * @param string $tierAntes   preenchido só quando houve troca de tipo
+ */
+function mensagem_renovacao(array $lic, string $validadeAnt = '',
+                            string $tierAntes = ''): string {
+    $q = "\n";
+
+    $cliente = $lic['nome_fantasia'] ?? ($lic['cli_fantasia'] ?? null);
+    if (!$cliente) $cliente = $lic['razao_social'] ?? '';
+
+    $produto = strtoupper($lic['produto_codigo'] ?? '');
+    $nomeProduto = $produto === 'TS5'   ? 'Total Scale 5'
+                 : ($produto === 'TS6'  ? 'Total Scale 6'
+                 : ($produto === 'TSLPR'? 'TS LPR' : $produto));
+
+    $t = '*LICENCA RENOVADA*' . $q . $q;
+
+    if ($cliente) $t .= 'Cliente: ' . $cliente . $q;
+    $t .= 'Software: ' . ($nomeProduto ?: 'Total Scale') . $q;
+
+    if ($tierAntes !== '' && !empty($lic['tier_nome']))
+        $t .= 'Tipo: ' . $tierAntes . ' -> *' . $lic['tier_nome'] . '*' . $q;
+    elseif (!empty($lic['tier_nome']))
+        $t .= 'Tipo: ' . $lic['tier_nome'] . $q;
+
+    if (!empty($lic['modulos'])) $t .= 'Modulos: ' . $lic['modulos'] . $q;
+
+    $t .= $q . '*NOVA VALIDADE*' . $q;
+    if ($validadeAnt !== '')
+        $t .= date('d/m/Y', strtotime($validadeAnt)) . '  ->  ';
+    $t .= '*' . date('d/m/Y', strtotime($lic['expira_em'])) . '*' . $q . $q;
+
+    $t .= '*Registro:* ' . $lic['chave'] . $q . $q;
+
+    /* O ponto que evita o chamado: a data no sistema não muda na hora.
+       Sem este aviso, o cliente abre o Total Scale, vê a validade
+       antiga e liga achando que a renovação não foi feita. */
+    $t .= 'A nova validade chega ao sistema automaticamente em ate 7 '
+        . 'dias, desde que a maquina tenha internet.' . $q . $q
+        . 'Para atualizar na hora: abra o sistema, va em *Ajuda > '
+        . 'Registro do sistema* e clique em *Buscar no servidor*.';
+
+    $t .= rodape_institucional();
+
+    return $t;
+}
+
+/** Botão que copia a mensagem de renovação. */
+function botao_whatsapp_renovacao(array $lic, string $validadeAnt = '',
+                                  string $tierAntes = '',
+                                  string $rotulo = ''): string {
+    $texto = mensagem_renovacao($lic, $validadeAnt, $tierAntes);
+    $json  = htmlspecialchars(json_encode($texto, JSON_UNESCAPED_UNICODE),
+                              ENT_QUOTES, 'UTF-8');
+    return '<button type="button" class="btn" '
+         . 'data-msg="' . $json . '" onclick="copiarLicenca(this)" '
+         . 'title="Copia o aviso de renovacao para enviar ao cliente">'
+         . ($rotulo !== '' ? $rotulo : 'Copiar aviso p/ WhatsApp')
+         . '</button>';
+}
+
 /** Script de cópia — inclua uma vez por página. */
 function script_copiar_licenca(): string {
     return <<<'HTML'
