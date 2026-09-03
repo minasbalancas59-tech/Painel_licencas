@@ -6,6 +6,12 @@ require_once __DIR__ . '/../api/lib/config_db.php';
 require 'inc/mensagem.php';
 require 'inc/email_licenca.php';
 exige_login();
+
+/* Usada no log da renovação. No escopo global: dentro de um if, o PHP
+   só declara quando aquele bloco executa. */
+function moeda(?float $v): string {
+    return $v === null ? '—' : 'R$ ' . number_format($v, 2, ',', '.');
+}
 exige_admin_escopo();
 
 /* =====================================================================
@@ -475,11 +481,17 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
 
         if (!$lrow) { $msg='Licença não encontrada.'; $tipo='erro'; }
         else {
-            // renova a partir do vencimento atual quando ele ainda esta
-            // no futuro (nao se perde o tempo ja pago); se ja venceu,
-            // conta a partir de hoje
-            $base = max(strtotime($lrow['expira_em']), strtotime(date('Y-m-d')));
-            $novo = date('Y-m-d', strtotime("+$meses months", $base));
+            /* A renovação SUBSTITUI a validade: vale sempre hoje + N
+               meses, nunca soma ao vencimento anterior.
+
+               Somar acumulava. Nove renovações de 6 meses levavam a
+               licença para 2034 sem ninguém perceber — o valor certo
+               é o do último acordo, não a soma de todos.
+
+               Efeito: cliente que renova antes de vencer perde os dias
+               que sobravam. É consciente: o prazo passa a ser o que foi
+               combinado agora. */
+            $novo = date('Y-m-d', strtotime("+$meses months"));
 
             db()->prepare(
               'UPDATE licencas
@@ -506,7 +518,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='renovar') {
                 "de {$lrow['expira_em']} para $novo (+{$meses}m)"
                 . ($vRenov !== null ? ' - ' . moeda($vRenov) : ''));
 
-            pos_acao('Licença renovada até '.date('d/m/Y', strtotime($novo))
+            $antes = date('d/m/Y', strtotime($lrow['expira_em']));
+            pos_acao('Licença renovada: ' . $antes . ' → '
+                . date('d/m/Y', strtotime($novo))
                 . '. O cliente recebe a nova validade na próxima '
                 . 'revalidação (até 7 dias).', 'ok');
         }
