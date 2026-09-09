@@ -159,10 +159,14 @@ function corpo_html(string $titulo, string $intro, array $itens, bool $rev): str
 /* ---------------------------------------------------------------------
  *  4) e-mail do admin: tudo
  * ------------------------------------------------------------------- */
-$destAdmin = cfg('email_admin') ?: null;
+/* Um ou mais e-mails, separados por virgula. Cada um recebe uma copia
+   independente: se um endereco estiver com a caixa cheia ou digitado
+   errado, os outros continuam recebendo normalmente. */
+$destAdmins = array_filter(array_map('trim',
+    explode(',', cfg('email_admin') ?: '')));
 $enviados  = [];   // [licenca_id, marco, expira_em, destino]
 
-if ($destAdmin) {
+if ($destAdmins) {
     $venc = array_filter($pendentes, fn($l) => (int)$l['dias'] < 0);
     $assunto = count($pendentes) . ' licença(s) a vencer'
              . ($venc ? ' — ' . count($venc) . ' já vencida(s)' : '');
@@ -173,9 +177,15 @@ if ($destAdmin) {
         . 'para renovar.',
         $pendentes, false);
 
-    if ($simular) {
-        log_linha("[simular] admin <$destAdmin>: $assunto");
-    } else {
+    foreach ($destAdmins as $destAdmin) {
+        if (!filter_var($destAdmin, FILTER_VALIDATE_EMAIL)) {
+            log_linha("E-mail do admin invalido, ignorado: $destAdmin");
+            continue;
+        }
+        if ($simular) {
+            log_linha("[simular] admin <$destAdmin>: $assunto");
+            continue;
+        }
         $erro = null;
         if (smtp_enviar($destAdmin, $assunto, $html, $erro)) {
             log_linha("Admin avisado ($destAdmin): " . count($pendentes) . ' licencas.');
@@ -183,7 +193,7 @@ if ($destAdmin) {
                 $enviados[] = [$l['id'], $l['_marco'], $l['expira_em'], $destAdmin];
             }
         } else {
-            log_linha("ERRO ao enviar para o admin: $erro");
+            log_linha("ERRO ao enviar para $destAdmin: $erro");
         }
     }
 } else {
