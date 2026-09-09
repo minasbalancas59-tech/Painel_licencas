@@ -327,8 +327,90 @@ abre_pagina('Painel', 'painel');
   <div class="stat"><div class="n"><?= (int)$kpi['estoque'] ?></div><div class="l">Em estoque</div></div>
   <div class="stat"><div class="n"><?= (int)$clientesTotal ?></div><div class="l">Clientes</div></div>
   <div class="stat"><div class="n" style="color:var(--ambar)"><?= (int)$kpi['expirando'] ?></div><div class="l">Expiram em 30 dias</div></div>
-  <div class="stat"><div class="n"><?= (int)$maq['dongle'] ?></div><div class="l">Ainda no dongle</div></div>
+  <a class="stat" href="licencas.php?status=nova" style="text-decoration:none">
+    <div class="n" style="color:<?= (int)$naoAtiv['cli_velho'] > 0
+        ? 'var(--vermelho)' : 'var(--texto)' ?>"><?= (int)$naoAtiv['total'] ?></div>
+    <div class="l">Não ativadas</div>
+    <?php if ((int)$naoAtiv['cli_velho'] > 0): ?>
+      <div class="l" style="font-size:10px;color:var(--vermelho)">
+        <?= (int)$naoAtiv['cli_velho'] ?> há mais de 60 dias</div>
+    <?php endif; ?>
+  </a>
+  <?php if ((int)$maq['dongle'] > 0): ?>
+    <div class="stat"><div class="n"><?= (int)$maq['dongle'] ?></div>
+      <div class="l">Ainda no dongle</div></div>
+  <?php endif; ?>
 </div>
+
+<?php if ((int)$naoAtiv['total'] > 0): ?>
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <h3 style="margin:0">Emitidas e não ativadas</h3>
+    <span class="subtitulo" style="margin:0"><?= (int)$naoAtiv['total'] ?> licenças</span>
+  </div>
+  <p class="subtitulo" style="margin:4px 0 16px">
+    Chave gerada que nunca foi instalada em nenhuma máquina.
+  </p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+    <div>
+      <h4 style="margin:0 0 4px;font-size:12px;color:var(--ambar)">
+        AGUARDANDO INSTALAÇÃO</h4>
+      <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
+        Cliente definido, software não instalado
+      </p>
+      <table style="font-size:13px">
+        <tr><td>até 15 dias</td>
+            <td class="mono" style="text-align:right"><?= (int)$naoAtiv['cli_novo'] ?></td></tr>
+        <tr><td>16 a 60 dias</td>
+            <td class="mono" style="text-align:right;color:var(--ambar)">
+              <?= (int)$naoAtiv['cli_medio'] ?></td></tr>
+        <tr><td>mais de 60 dias</td>
+            <td class="mono" style="text-align:right;color:var(--vermelho)">
+              <?= (int)$naoAtiv['cli_velho'] ?></td></tr>
+      </table>
+    </div>
+
+    <div>
+      <h4 style="margin:0 0 4px;font-size:12px;color:var(--ambar)">
+        ESTOQUE DE REVENDEDOR</h4>
+      <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
+        Ainda sem cliente final
+      </p>
+      <table style="font-size:13px">
+        <?php if (!$estoqueRev): ?>
+          <tr><td style="color:var(--texto-2)">Nenhuma em estoque.</td></tr>
+        <?php else: foreach ($estoqueRev as $er): ?>
+          <tr><td><?= e($er['nome']) ?></td>
+              <td class="mono" style="text-align:right"><?= (int)$er['n'] ?></td></tr>
+        <?php endforeach; endif; ?>
+      </table>
+    </div>
+  </div>
+
+  <?php if ($paradas): ?>
+    <div style="border-top:1px solid var(--borda);margin-top:16px;padding-top:12px">
+      <p class="subtitulo" style="margin:0 0 8px">As mais paradas</p>
+      <table style="font-size:13px">
+        <?php foreach ($paradas as $pa): ?>
+          <tr>
+            <td><?= e($pa['cliente']) ?></td>
+            <td class="mono" style="width:110px;font-size:11px;color:var(--texto-2)">
+              <?= e(strtoupper($pa['produto'] ?? '—')) ?>
+              <?= $pa['tier'] ? '· ' . e($pa['tier']) : '' ?></td>
+            <td style="width:80px;text-align:right;color:<?=
+                (int)$pa['dias'] > 60 ? 'var(--vermelho)'
+                : ((int)$pa['dias'] > 15 ? 'var(--ambar)' : 'var(--texto-2)') ?>">
+              <?= (int)$pa['dias'] ?> dias</td>
+          </tr>
+        <?php endforeach; ?>
+      </table>
+      <a class="btn sec pequeno" style="margin-top:12px"
+         href="licencas.php?status=nova">Ver todas</a>
+    </div>
+  <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <div class="card">
   <h3>Licenças emitidas por mês, por tipo</h3>
@@ -411,76 +493,6 @@ abre_pagina('Painel', 'painel');
     </tbody>
   </table>
 </div>
-
-<?php if ((int)$naoAtiv['total'] > 0): ?>
-<div class="card">
-  <div style="display:flex;justify-content:space-between;align-items:baseline">
-    <h3 style="margin:0">Emitidas e não ativadas</h3>
-    <span class="subtitulo" style="margin:0"><?= (int)$naoAtiv['total'] ?> licenças</span>
-  </div>
-  <p class="subtitulo" style="margin:4px 0 16px">
-    Chave gerada que nunca foi instalada em nenhuma máquina.
-  </p>
-
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
-    <div>
-      <h4 style="margin:0 0 4px;font-size:12px;color:var(--ambar)">
-        AGUARDANDO INSTALAÇÃO</h4>
-      <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
-        Cliente definido, software não instalado
-      </p>
-      <table style="font-size:13px">
-        <tr><td>até 15 dias</td>
-            <td class="mono" style="text-align:right"><?= (int)$naoAtiv['cli_novo'] ?></td></tr>
-        <tr><td>16 a 60 dias</td>
-            <td class="mono" style="text-align:right;color:var(--ambar)">
-              <?= (int)$naoAtiv['cli_medio'] ?></td></tr>
-        <tr><td>mais de 60 dias</td>
-            <td class="mono" style="text-align:right;color:var(--vermelho)">
-              <?= (int)$naoAtiv['cli_velho'] ?></td></tr>
-      </table>
-    </div>
-
-    <div>
-      <h4 style="margin:0 0 4px;font-size:12px;color:var(--ambar)">
-        ESTOQUE DE REVENDEDOR</h4>
-      <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
-        Ainda sem cliente final
-      </p>
-      <table style="font-size:13px">
-        <?php if (!$estoqueRev): ?>
-          <tr><td style="color:var(--texto-2)">Nenhuma em estoque.</td></tr>
-        <?php else: foreach ($estoqueRev as $er): ?>
-          <tr><td><?= e($er['nome']) ?></td>
-              <td class="mono" style="text-align:right"><?= (int)$er['n'] ?></td></tr>
-        <?php endforeach; endif; ?>
-      </table>
-    </div>
-  </div>
-
-  <?php if ($paradas): ?>
-    <div style="border-top:1px solid var(--borda);margin-top:16px;padding-top:12px">
-      <p class="subtitulo" style="margin:0 0 8px">As mais paradas</p>
-      <table style="font-size:13px">
-        <?php foreach ($paradas as $pa): ?>
-          <tr>
-            <td><?= e($pa['cliente']) ?></td>
-            <td class="mono" style="width:110px;font-size:11px;color:var(--texto-2)">
-              <?= e(strtoupper($pa['produto'] ?? '—')) ?>
-              <?= $pa['tier'] ? '· ' . e($pa['tier']) : '' ?></td>
-            <td style="width:80px;text-align:right;color:<?=
-                (int)$pa['dias'] > 60 ? 'var(--vermelho)'
-                : ((int)$pa['dias'] > 15 ? 'var(--ambar)' : 'var(--texto-2)') ?>">
-              <?= (int)$pa['dias'] ?> dias</td>
-          </tr>
-        <?php endforeach; ?>
-      </table>
-      <a class="btn sec pequeno" style="margin-top:12px"
-         href="licencas.php?status=nova">Ver todas</a>
-    </div>
-  <?php endif; ?>
-</div>
-<?php endif; ?>
 
 <div class="card">
   <h3>Vencendo nos próximos 90 dias</h3>
