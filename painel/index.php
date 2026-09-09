@@ -225,6 +225,24 @@ $mapaCor = ['ativa'=>'#38b26b','nova'=>'#4a9fd4',
 $corStatus = [];
 foreach ($porStatus as $ps) $corStatus[] = $mapaCor[$ps['status']] ?? '#93a1ac';
 
+/* Emissões do mês, por software.
+
+   O KPI "Emitidas no mês" dá o total; este quadro mostra de onde ele
+   veio. Um mês bom no TS6 e fraco no TS5 é informação diferente de um
+   mês médio nos dois — e o total sozinho esconde isso.
+
+   Traz também o mês anterior, porque um número sem comparação não diz
+   se foi bom ou ruim. */
+$emissaoMes = db()->query(
+  "SELECT p.codigo, p.nome,
+          SUM(DATE_FORMAT(l.emitido_em,'%Y-%m') = DATE_FORMAT(CURDATE(),'%Y-%m')) AS mes,
+          SUM(DATE_FORMAT(l.emitido_em,'%Y-%m') =
+              DATE_FORMAT(DATE_SUB(CURDATE(), INTERVAL 1 MONTH),'%Y-%m')) AS mes_ant
+     FROM produtos p
+     LEFT JOIN licencas l ON l.produto_id = p.id
+    WHERE p.ativo = 1
+    GROUP BY p.id ORDER BY p.codigo")->fetchAll();
+
 /* ---------------------------------------------------------------------
  *  EMITIDAS E NÃO ATIVADAS
  * ---------------------------------------------------------------------
@@ -298,6 +316,12 @@ $ultimos = db()->query(
    $wLicW
     ORDER BY a.id DESC LIMIT 10")->fetchAll();
 
+/** Nome do mês por extenso, para o título dos cards. */
+function mesPtBr(int $n): string {
+    return ['', 'janeiro','fevereiro','março','abril','maio','junho','julho',
+            'agosto','setembro','outubro','novembro','dezembro'][$n] ?? '';
+}
+
 abre_pagina('Painel', 'painel');
 ?>
 <h1 class="titulo">Visão geral</h1>
@@ -341,6 +365,44 @@ abre_pagina('Painel', 'painel');
       <div class="l">Ainda no dongle</div></div>
   <?php endif; ?>
 </div>
+
+<?php if ($fProd === '' && count($emissaoMes) > 1): ?>
+  <div class="card" style="padding:14px 18px">
+    <div style="display:flex;justify-content:space-between;align-items:baseline;
+         margin-bottom:12px">
+      <h3 style="margin:0">Emitidas em <?= mesPtBr(date('n')) ?></h3>
+      <span class="subtitulo" style="margin:0">comparado ao mês anterior</span>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(<?=
+         min(count($emissaoMes), 4) ?>,1fr);gap:12px">
+      <?php foreach ($emissaoMes as $em):
+          $m  = (int)$em['mes'];
+          $ma = (int)$em['mes_ant'];
+          $dif = $m - $ma;
+      ?>
+        <a href="licencas.php?produto=<?= e($em['codigo']) ?>"
+           style="text-decoration:none;background:var(--bg-3);
+           border-radius:var(--raio);padding:12px 14px;display:block">
+          <div style="font-size:11px;color:var(--texto-2)">
+            <?= e($em['nome']) ?></div>
+          <div class="mono" style="font-size:22px;margin-top:4px"><?= $m ?></div>
+          <div style="font-size:11px;margin-top:2px;color:<?=
+              $dif > 0 ? 'var(--verde)' : ($dif < 0 ? 'var(--vermelho)' : 'var(--texto-2)') ?>">
+            <?php if ($ma === 0 && $m === 0): ?>
+              nenhuma no mês passado
+            <?php elseif ($dif > 0): ?>
+              +<?= $dif ?> · eram <?= $ma ?>
+            <?php elseif ($dif < 0): ?>
+              <?= $dif ?> · eram <?= $ma ?>
+            <?php else: ?>
+              igual ao mês passado
+            <?php endif; ?>
+          </div>
+        </a>
+      <?php endforeach; ?>
+    </div>
+  </div>
+<?php endif; ?>
 
 <?php if ((int)$naoAtiv['total'] > 0): ?>
 <div class="card">
