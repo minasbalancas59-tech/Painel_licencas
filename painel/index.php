@@ -41,16 +41,34 @@ $prodNome = '';
 foreach ($produtos as $pp)
     if ($pp['codigo'] === $fProd) $prodNome = $pp['nome'];
 
-// fragmentos prontos, para nao repetir o mesmo JOIN em 13 consultas
+/* ---------------------------------------------------------------------
+ *  SÓ LICENÇAS ATIVAS
+ * ---------------------------------------------------------------------
+ *  A visão geral mostra a base VIVA: quantas licenças estão de pé
+ *  agora, quanto se usa, quem está para vencer.
+ *
+ *  Revogadas e expiradas continuam no banco e aparecem em Licenças e no
+ *  Relatório — mas somá-las aqui distorce tudo. Um painel que diz "40
+ *  licenças" quando 25 foram revogadas não ajuda a decidir nada.
+ *
+ *  Inclui 'nova' junto com 'ativa': licença emitida e ainda não
+ *  ativada é uma venda feita, esperando instalação. Deixá-la de fora
+ *  esconderia o estoque do revendedor.
+ * ------------------------------------------------------------------- */
+$soAtivas = "l.status IN ('ativa','nova')";
+
+// fragmentos prontos, para nao repetir o mesmo filtro em 13 consultas
 if ($fProd !== '') {
     $joinProd = 'JOIN produtos pf ON pf.id = l.produto_id AND pf.codigo = '
               . db()->quote($fProd);
-    $wLic  = 'AND l.produto_id = (SELECT id FROM produtos WHERE codigo = '
-           . db()->quote($fProd) . ')';
-    $wLicW = 'WHERE l.produto_id = (SELECT id FROM produtos WHERE codigo = '
-           . db()->quote($fProd) . ')';
+    $wLic  = "AND $soAtivas AND l.produto_id = (SELECT id FROM produtos "
+           . 'WHERE codigo = ' . db()->quote($fProd) . ')';
+    $wLicW = "WHERE $soAtivas AND l.produto_id = (SELECT id FROM produtos "
+           . 'WHERE codigo = ' . db()->quote($fProd) . ')';
 } else {
-    $joinProd = ''; $wLic = ''; $wLicW = '';
+    $joinProd = '';
+    $wLic  = "AND $soAtivas";
+    $wLicW = "WHERE $soAtivas";
 }
 
 $anoAtual = (int)date('Y');
@@ -183,9 +201,22 @@ $porRev = db()->query(
     GROUP BY nome ORDER BY total DESC")->fetchAll();
 
 // ---- status ----------------------------------------------------------
+/* Situação: agora conta TODAS, inclusive as que o resto da tela
+   filtra. É o único lugar onde revogada e expirada aparecem — serve
+   justamente para você saber quanto ficou de fora dos outros
+   números. */
+$wProdSo = $fProd === '' ? '' :
+    'WHERE l.produto_id = (SELECT id FROM produtos WHERE codigo = '
+    . db()->quote($fProd) . ')';
+
 $porStatus = db()->query(
   "SELECT l.status, COUNT(*) AS n FROM licencas l
-   $wLicW GROUP BY l.status")->fetchAll();
+   $wProdSo GROUP BY l.status")->fetchAll();
+
+$foraDaConta = 0;
+foreach ($porStatus as $ps)
+    if (!in_array($ps['status'], ['ativa','nova'], true))
+        $foraDaConta += (int)$ps['n'];
 
 // cor por status, na MESMA ordem dos labels (o Chart.js exige array,
 // nao objeto: um objeto vira cores indefinidas e as fatias saem pretas)
@@ -193,6 +224,58 @@ $mapaCor = ['ativa'=>'#38b26b','nova'=>'#4a9fd4',
             'revogada'=>'#e0574e','expirada'=>'#93a1ac'];
 $corStatus = [];
 foreach ($porStatus as $ps) $corStatus[] = $mapaCor[$ps['status']] ?? '#93a1ac';
+
+/* ---------------------------------------------------------------------
+ *  EMITIDAS E NÃO ATIVADAS
+ * ---------------------------------------------------------------------
+ *  Chave gerada que nunca foi instalada em máquina nenhuma
+ *  (fingerprint nulo). São dois casos bem diferentes:
+ *
+ *    com cliente  — ele comprou e não instalou. Venda parada; alguém
+ *                   precisa cobrar a instalação.
+ *    sem cliente  — estoque do revendedor, esperando ele vender. É
+ *                   situação normal.
+ *
+ *  O que importa nos dois é HÁ QUANTO TEMPO. Emitida ontem não é
+ *  problema; de três meses atrás é alguém que talvez nem lembre que
+ *  comprou.
+ * ------------------------------------------------------------------- */
+$naoAtiv = db()->query(
+  "SELECT
+     SUM(l.cliente_id IS NOT NULL AND DATEDIFF(NOW(),l.emitido_em) <= 15) AS cli_novo,
+     SUM(l.cliente_id IS NOT NULL AND DATEDIFF(NOW(),l.emitido_em) BETWEEN 16 AND 60) AS cli_medio,
+     SUM(l.cliente_id IS NOT NULL AND DATEDIFF(NOW(),l.emitido_em) > 60) AS cli_velho,
+     SUM(l.cliente_id IS NULL)  AS estoque,
+     COUNT(*)                   AS total
+   FROM licencas l
+  WHERE l.fingerprint IS NULL
+    AND l.status IN ('nova','ativa')
+    $wLic")->fetch();
+
+// estoque por revendedor, para ver quem acumula sem vender
+$estoqueRev = db()->query(
+  "SELECT COALESCE(u.nome_fantasia, u.empresa, u.nome, '(sem revendedor)') AS nome,
+          COUNT(*) AS n
+     FROM licencas l
+     LEFT JOIN usuarios u ON u.id = l.revendedor_id
+    WHERE l.fingerprint IS NULL AND l.cliente_id IS NULL
+      AND l.status IN ('nova','ativa')
+      $wLic
+    GROUP BY l.revendedor_id ORDER BY n DESC LIMIT 5")->fetchAll();
+
+// as mais paradas: a lista de cobrança
+$paradas = db()->query(
+  "SELECT l.chave, l.emitido_em,
+          COALESCE(c.nome_fantasia, c.razao_social) AS cliente,
+          p.codigo AS produto, t.nome AS tier,
+          DATEDIFF(NOW(), l.emitido_em) AS dias
+     FROM licencas l
+     JOIN clientes c ON c.id = l.cliente_id
+     LEFT JOIN produtos p ON p.id = l.produto_id
+     LEFT JOIN tiers    t ON t.id = l.tier_id
+    WHERE l.fingerprint IS NULL AND l.status IN ('nova','ativa')
+      $wLic
+    ORDER BY l.emitido_em LIMIT 5")->fetchAll();
 
 // ---- vencimentos proximos -------------------------------------------
 $vencendo = db()->query(
@@ -220,8 +303,8 @@ abre_pagina('Painel', 'painel');
 <h1 class="titulo">Visão geral</h1>
 <p class="subtitulo">
   <?= $fProd === ''
-      ? 'Licenças, uso do software e desempenho por revendedor'
-      : 'Mostrando apenas ' . e($prodNome) ?>
+      ? 'Licenças ativas, uso do software e desempenho por revendedor'
+      : 'Licenças ativas de ' . e($prodNome) ?>
 </p>
 
 <div style="display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap">
@@ -284,6 +367,14 @@ abre_pagina('Painel', 'painel');
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
   <div class="card">
     <h3>Situação das licenças</h3>
+    <p class="subtitulo" style="margin-top:-6px">
+      <?php if ($foraDaConta > 0): ?>
+        Os demais números desta tela contam só as ativas.
+        <b><?= $foraDaConta ?></b> revogada(s) ou expirada(s) ficam de fora.
+      <?php else: ?>
+        Todas as licenças estão ativas.
+      <?php endif; ?>
+    </p>
     <canvas id="gStatus" height="150"></canvas>
   </div>
   <div class="card">
@@ -320,6 +411,76 @@ abre_pagina('Painel', 'painel');
     </tbody>
   </table>
 </div>
+
+<?php if ((int)$naoAtiv['total'] > 0): ?>
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <h3 style="margin:0">Emitidas e não ativadas</h3>
+    <span class="subtitulo" style="margin:0"><?= (int)$naoAtiv['total'] ?> licenças</span>
+  </div>
+  <p class="subtitulo" style="margin:4px 0 16px">
+    Chave gerada que nunca foi instalada em nenhuma máquina.
+  </p>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:24px">
+    <div>
+      <h4 style="margin:0 0 4px;font-size:12px;color:var(--ambar)">
+        AGUARDANDO INSTALAÇÃO</h4>
+      <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
+        Cliente definido, software não instalado
+      </p>
+      <table style="font-size:13px">
+        <tr><td>até 15 dias</td>
+            <td class="mono" style="text-align:right"><?= (int)$naoAtiv['cli_novo'] ?></td></tr>
+        <tr><td>16 a 60 dias</td>
+            <td class="mono" style="text-align:right;color:var(--ambar)">
+              <?= (int)$naoAtiv['cli_medio'] ?></td></tr>
+        <tr><td>mais de 60 dias</td>
+            <td class="mono" style="text-align:right;color:var(--vermelho)">
+              <?= (int)$naoAtiv['cli_velho'] ?></td></tr>
+      </table>
+    </div>
+
+    <div>
+      <h4 style="margin:0 0 4px;font-size:12px;color:var(--ambar)">
+        ESTOQUE DE REVENDEDOR</h4>
+      <p class="subtitulo" style="margin:0 0 10px;font-size:11px">
+        Ainda sem cliente final
+      </p>
+      <table style="font-size:13px">
+        <?php if (!$estoqueRev): ?>
+          <tr><td style="color:var(--texto-2)">Nenhuma em estoque.</td></tr>
+        <?php else: foreach ($estoqueRev as $er): ?>
+          <tr><td><?= e($er['nome']) ?></td>
+              <td class="mono" style="text-align:right"><?= (int)$er['n'] ?></td></tr>
+        <?php endforeach; endif; ?>
+      </table>
+    </div>
+  </div>
+
+  <?php if ($paradas): ?>
+    <div style="border-top:1px solid var(--borda);margin-top:16px;padding-top:12px">
+      <p class="subtitulo" style="margin:0 0 8px">As mais paradas</p>
+      <table style="font-size:13px">
+        <?php foreach ($paradas as $pa): ?>
+          <tr>
+            <td><?= e($pa['cliente']) ?></td>
+            <td class="mono" style="width:110px;font-size:11px;color:var(--texto-2)">
+              <?= e(strtoupper($pa['produto'] ?? '—')) ?>
+              <?= $pa['tier'] ? '· ' . e($pa['tier']) : '' ?></td>
+            <td style="width:80px;text-align:right;color:<?=
+                (int)$pa['dias'] > 60 ? 'var(--vermelho)'
+                : ((int)$pa['dias'] > 15 ? 'var(--ambar)' : 'var(--texto-2)') ?>">
+              <?= (int)$pa['dias'] ?> dias</td>
+          </tr>
+        <?php endforeach; ?>
+      </table>
+      <a class="btn sec pequeno" style="margin-top:12px"
+         href="licencas.php?status=nova">Ver todas</a>
+    </div>
+  <?php endif; ?>
+</div>
+<?php endif; ?>
 
 <div class="card">
   <h3>Vencendo nos próximos 90 dias</h3>
