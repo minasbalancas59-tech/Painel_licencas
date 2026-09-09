@@ -119,11 +119,11 @@ function tabela_html(array $itens, bool $paraRevendedor = false): string {
 
     foreach ($itens as $i => $l) {
         $dias = (int)$l['dias'];
-        if ($dias < 0)      { $sit = 'VENCIDA';            $cor = '#e0574e'; }
-        elseif ($dias === 0){ $sit = 'vence hoje';         $cor = '#e0574e'; }
-        elseif ($dias <= 7) { $sit = "em $dias dias";      $cor = '#e0574e'; }
-        elseif ($dias <= 15){ $sit = "em $dias dias";      $cor = '#f0a92b'; }
-        else                { $sit = "em $dias dias";      $cor = '#93a1ac'; }
+        if ($dias < 0)      { $sit = '🔴 VENCIDA';          $cor = '#e0574e'; }
+        elseif ($dias === 0){ $sit = '🔴 vence hoje';       $cor = '#e0574e'; }
+        elseif ($dias <= 7) { $sit = "🟠 em $dias dias";    $cor = '#e0574e'; }
+        elseif ($dias <= 15){ $sit = "🟡 em $dias dias";    $cor = '#f0a92b'; }
+        else                { $sit = "🟢 em $dias dias";    $cor = '#93a1ac'; }
 
         $fundo = $i % 2 ? '#f7f9fa' : '#ffffff';
         $cli   = htmlspecialchars($l['nome_fantasia'] ?: ($l['razao_social'] ?: '—'));
@@ -152,7 +152,7 @@ function corpo_html(string $titulo, string $intro, array $itens, bool $rev): str
          . '<p style="color:#666;font-size:13px;margin:0 0 18px">' . $intro . '</p>'
          . tabela_html($itens, $rev)
          . '<p style="color:#93a1ac;font-size:11px;margin-top:22px">'
-         . 'Enviado automaticamente pelo painel de licenças em '
+         . '🤖 Enviado automaticamente pelo painel de licenças em '
          . date('d/m/Y H:i') . '. Não responda este e-mail.</p></div>';
 }
 
@@ -168,12 +168,12 @@ $enviados  = [];   // [licenca_id, marco, expira_em, destino]
 
 if ($destAdmins) {
     $venc = array_filter($pendentes, fn($l) => (int)$l['dias'] < 0);
-    $assunto = count($pendentes) . ' licença(s) a vencer'
-             . ($venc ? ' — ' . count($venc) . ' já vencida(s)' : '');
+    $assunto = '📋 ' . count($pendentes) . ' licença(s) a vencer'
+             . ($venc ? ' — ' . count($venc) . ' já vencida(s) ⚠️' : '');
 
     $html = corpo_html(
-        'Licenças a vencer',
-        'Resumo diário. Abra o painel em Licenças → filtro "Vencimento" '
+        '📋 Licenças a vencer',
+        '📆 Resumo diário. Abra o painel em Licenças → filtro "Vencimento" '
         . 'para renovar.',
         $pendentes, false);
 
@@ -218,11 +218,11 @@ foreach ($pendentes as $l) {
 foreach ($porRev as $revId => $itens) {
     $email = $itens[0]['rev_email'];
     $nome  = $itens[0]['rev_fantasia'] ?: ($itens[0]['rev_empresa'] ?: $itens[0]['rev_nome']);
-    $assunto = count($itens) . ' licença(s) dos seus clientes a vencer';
+    $assunto = '📋 ' . count($itens) . ' licença(s) dos seus clientes a vencer';
 
     $html = corpo_html(
-        'Licenças a vencer',
-        'Olá, ' . htmlspecialchars($nome) . '. Estas licenças de clientes '
+        '📋 Licenças a vencer',
+        '👋 Olá, ' . htmlspecialchars($nome) . '. Estas licenças de clientes '
         . 'seus estão perto do vencimento.',
         $itens, true);
 
