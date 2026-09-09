@@ -29,7 +29,15 @@ function responde(array $r, int $http = 200) {
 
 // --- le a requisicao -------------------------------------------------
 $body = json_decode(file_get_contents('php://input'), true);
-$chave = trim($body['chave'] ?? '');
+/* Normaliza a chave antes de procurar.
+
+   O cliente digita de tudo: sem os traços, com espaço no meio, em
+   minúsculas, colado com um espaço invisível no fim. Recusar por isso
+   gera chamado de suporte para um erro que o servidor pode absorver.
+
+   A chave é sempre LETRAS-NUMEROS em grupos de 4; qualquer outro
+   caractere é ruído de digitação. */
+$chave = normalizar_chave($body['chave'] ?? '');
 $fp    = trim($body['fingerprint'] ?? '');
 
 if ($chave === '' || $fp === '') {

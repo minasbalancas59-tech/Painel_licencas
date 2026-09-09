@@ -33,7 +33,9 @@ if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao'] ?? '')==='vincular') 
 if ($_SERVER['REQUEST_METHOD']==='POST' && ($_POST['acao']??'')==='gerar') {
     if (!csrf_valido()) { $msg='Sessão inválida.'; $tipo='erro'; }
     else {
-        $chave = strtoupper(trim($_POST['chave'] ?? ''));
+        // aceita a chave como o cliente ditou: sem traços, com espaço,
+        // em minúsculas
+        $chave = normalizar_chave($_POST['chave'] ?? '');
         $fp    = trim($_POST['fingerprint'] ?? '');
         $u     = usuario_logado();
 

@@ -205,6 +205,34 @@ function log_acao_painel(?int $licencaId, ?string $chave, ?string $fp,
  * ===================================================================== */
 
 /**
+ * Normaliza uma chave de registro digitada pelo cliente.
+ *
+ *   ts5xf36pjpdrkn3y     -> TS5X-F36P-JPDR-KN3Y
+ *   TS5X F36P JPDR KN3Y  -> TS5X-F36P-JPDR-KN3Y
+ *   TS5X-F36P-JPDR-KN3Y  -> igual
+ *
+ * O formato real é PREFIXO-XXXX-XXXX-XXXX, com o prefixo variando de
+ * tamanho (TS5X, TSLPRX). Por isso a reconstrução parte do FIM: os
+ * últimos três grupos têm sempre 4 caracteres, e o que sobra na frente
+ * é o prefixo.
+ */
+function normalizar_chave(?string $bruta): string {
+    $c = strtoupper(preg_replace('/[^A-Za-z0-9]/', '', (string)$bruta));
+    if ($c === '') return '';
+
+    // curta demais para ter os três grupos: devolve como veio, em
+    // maiúsculas, e deixa a busca no banco decidir
+    if (strlen($c) < 13) return $c;
+
+    $g3 = substr($c, -4);
+    $g2 = substr($c, -8, 4);
+    $g1 = substr($c, -12, 4);
+    $pre = substr($c, 0, strlen($c) - 12);
+
+    return $pre . '-' . $g1 . '-' . $g2 . '-' . $g3;
+}
+
+/**
  * Valida o digito verificador do CNPJ.
  * Evita cadastro criado a partir de numero digitado errado - que
  * depois vira cliente fantasma na base.
