@@ -59,6 +59,10 @@ function menu_estrutura(string $papel): array {
         ]],
 
         ['rotulo'=>'Monitoramento', 'itens'=>[
+            ['rotulo'=>'Atividade',    'url'=>'atividade.php',
+             'pagina'=>'atividade',    'desc'=>'Tentativas de ativação e erros'],
+            ['rotulo'=>'Revalidações', 'url'=>'revalidacoes.php',
+             'pagina'=>'revalidacoes', 'desc'=>'Quem está reportando ao servidor'],
             ['rotulo'=>'Máquinas',  'url'=>'maquinas.php',
              'pagina'=>'maquinas',  'desc'=>'Onde o software está rodando'],
             ['rotulo'=>'Relatório', 'url'=>'relatorio.php',
