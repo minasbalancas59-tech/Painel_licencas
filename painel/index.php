@@ -191,7 +191,8 @@ $porTipoLic = db()->query(
 
 // ---- por revendedor --------------------------------------------------
 $porRev = db()->query(
-  "SELECT COALESCE(u.nome,'Venda direta') AS nome,
+  "SELECT COALESCE(u.nome_fantasia, u.empresa, u.nome, 'Venda direta') AS nome,
+          u.nome AS contato,
           COUNT(*) AS total,
           SUM(l.cliente_id IS NOT NULL) AS vinculadas,
           SUM(l.cliente_id IS NULL)     AS estoque,
@@ -475,6 +476,28 @@ abre_pagina('Painel', 'painel');
 <?php endif; ?>
 
 <div class="card">
+  <h3>Vencendo nos próximos 90 dias</h3>
+  <table>
+    <thead><tr><th>Chave</th><th>Cliente</th><th>Software</th><th>Expira</th><th>Faltam</th></tr></thead>
+    <tbody>
+    <?php if (!$vencendo): ?>
+      <tr><td colspan="5" style="color:var(--texto-2)">Nenhuma licença vencendo no período.</td></tr>
+    <?php else: foreach ($vencendo as $v): ?>
+      <tr>
+        <td class="mono" style="font-size:12px"><?= e($v['chave']) ?></td>
+        <td><?= e($v['razao_social'] ?? '— estoque —') ?></td>
+        <td class="mono"><?= e(strtoupper($v['produto'] ?? '—')) ?></td>
+        <td class="mono"><?= date('d/m/Y', strtotime($v['expira_em'])) ?></td>
+        <td class="mono" style="<?= $v['dias'] <= 30 ? 'color:var(--ambar)' : '' ?>">
+          <?= (int)$v['dias'] ?> dias
+        </td>
+      </tr>
+    <?php endforeach; endif; ?>
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
   <h3>Licenças emitidas por mês, por tipo</h3>
   <canvas id="gEmissao" height="90"></canvas>
 </div>
@@ -545,7 +568,13 @@ abre_pagina('Painel', 'painel');
     <tbody>
     <?php foreach ($porRev as $r): ?>
       <tr>
-        <td><?= e($r['nome']) ?></td>
+        <td>
+          <?= e($r['nome']) ?>
+          <?php if (!empty($r['contato']) && $r['contato'] !== $r['nome']): ?>
+            <br><span style="font-size:11px;color:var(--texto-2)">
+              <?= e($r['contato']) ?></span>
+          <?php endif; ?>
+        </td>
         <td class="mono"><?= (int)$r['total'] ?></td>
         <td class="mono"><?= (int)$r['vinculadas'] ?></td>
         <td class="mono"><?= (int)$r['estoque'] ?></td>
@@ -556,27 +585,6 @@ abre_pagina('Painel', 'painel');
   </table>
 </div>
 
-<div class="card">
-  <h3>Vencendo nos próximos 90 dias</h3>
-  <table>
-    <thead><tr><th>Chave</th><th>Cliente</th><th>Software</th><th>Expira</th><th>Faltam</th></tr></thead>
-    <tbody>
-    <?php if (!$vencendo): ?>
-      <tr><td colspan="5" style="color:var(--texto-2)">Nenhuma licença vencendo no período.</td></tr>
-    <?php else: foreach ($vencendo as $v): ?>
-      <tr>
-        <td class="mono" style="font-size:12px"><?= e($v['chave']) ?></td>
-        <td><?= e($v['razao_social'] ?? '— estoque —') ?></td>
-        <td class="mono"><?= e(strtoupper($v['produto'] ?? '—')) ?></td>
-        <td class="mono"><?= date('d/m/Y', strtotime($v['expira_em'])) ?></td>
-        <td class="mono" style="<?= $v['dias'] <= 30 ? 'color:var(--ambar)' : '' ?>">
-          <?= (int)$v['dias'] ?> dias
-        </td>
-      </tr>
-    <?php endforeach; endif; ?>
-    </tbody>
-  </table>
-</div>
 
 <div class="card">
   <h3>Atividade recente</h3>
