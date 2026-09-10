@@ -25,9 +25,9 @@ function menu_estrutura(string $papel): array {
         // revendedor: tres telas, sem submenu - agrupar tres itens seria
         // esconder o que ja cabia na tela
         return [
-            ['rotulo'=>'Minhas licenÃ§as', 'url'=>'minhas.php',   'pagina'=>'minhas'],
+            ['rotulo'=>'Minhas licenças', 'url'=>'minhas.php',   'pagina'=>'minhas'],
             ['rotulo'=>'Meus clientes',   'url'=>'clientes.php', 'pagina'=>'clientes'],
-            ['rotulo'=>'MÃ¡quinas',        'url'=>'maquinas.php', 'pagina'=>'maquinas'],
+            ['rotulo'=>'Máquinas',        'url'=>'maquinas.php', 'pagina'=>'maquinas'],
         ];
     }
 
@@ -36,22 +36,22 @@ function menu_estrutura(string $papel): array {
 
         ['rotulo'=>'Comercial', 'itens'=>[
             ['rotulo'=>'Financeiro',   'url'=>'financeiro.php',
-             'pagina'=>'financeiro',   'desc'=>'Receita e previsÃ£o de renovaÃ§Ã£o'],
+             'pagina'=>'financeiro',   'desc'=>'Receita e previsão de renovação'],
             ['rotulo'=>'Clientes',     'url'=>'clientes.php',
              'pagina'=>'clientes',     'desc'=>'Cadastro, contatos e uso'],
             ['rotulo'=>'Revendedores', 'url'=>'revendedores.php',
              'pagina'=>'revendedores', 'desc'=>'Parceiros e estoque deles'],
             ['rotulo'=>'Autocadastros','url'=>'autocadastros.php',
-             'pagina'=>'autocadastros','desc'=>'Clientes registrados na ativaÃ§Ã£o',
+             'pagina'=>'autocadastros','desc'=>'Clientes registrados na ativação',
              'contador'=>'autocadastros_pendentes'],
         ]],
 
-        ['rotulo'=>'LicenÃ§as', 'itens'=>[
-            ['rotulo'=>'Emitir licenÃ§a',   'url'=>'emitir.php',
+        ['rotulo'=>'Licenças', 'itens'=>[
+            ['rotulo'=>'Emitir licença',   'url'=>'emitir.php',
              'pagina'=>'emitir',           'desc'=>'Gerar uma chave nova'],
-            ['rotulo'=>'LicenÃ§as emitidas','url'=>'licencas.php',
+            ['rotulo'=>'Licenças emitidas','url'=>'licencas.php',
              'pagina'=>'licencas',         'desc'=>'Acompanhar, renovar, revogar'],
-            ['rotulo'=>'AtivaÃ§Ã£o offline', 'url'=>'offline.php',
+            ['rotulo'=>'Ativação offline', 'url'=>'offline.php',
              'pagina'=>'offline',          'desc'=>'Para PC sem internet'],
             ['rotulo'=>'Trocas de cliente','url'=>'trocas.php',
              'pagina'=>'trocas',           'desc'=>'Pedidos dos revendedores',
@@ -60,28 +60,28 @@ function menu_estrutura(string $papel): array {
 
         ['rotulo'=>'Monitoramento', 'itens'=>[
             ['rotulo'=>'Atividade',    'url'=>'atividade.php',
-             'pagina'=>'atividade',    'desc'=>'Tentativas de ativaÃ§Ã£o e erros'],
-            ['rotulo'=>'RevalidaÃ§Ãµes', 'url'=>'revalidacoes.php',
-             'pagina'=>'revalidacoes', 'desc'=>'Quem estÃ¡ reportando ao servidor'],
-            ['rotulo'=>'MÃ¡quinas',  'url'=>'maquinas.php',
-             'pagina'=>'maquinas',  'desc'=>'Onde o software estÃ¡ rodando'],
-            ['rotulo'=>'RelatÃ³rio', 'url'=>'relatorio.php',
-             'pagina'=>'relatorio', 'desc'=>'Auditoria de aÃ§Ãµes'],
+             'pagina'=>'atividade',    'desc'=>'Tentativas de ativação e erros'],
+            ['rotulo'=>'Revalidações', 'url'=>'revalidacoes.php',
+             'pagina'=>'revalidacoes', 'desc'=>'Quem está reportando ao servidor'],
+            ['rotulo'=>'Máquinas',  'url'=>'maquinas.php',
+             'pagina'=>'maquinas',  'desc'=>'Onde o software está rodando'],
+            ['rotulo'=>'Relatório', 'url'=>'relatorio.php',
+             'pagina'=>'relatorio', 'desc'=>'Auditoria de ações'],
             ['rotulo'=>'Volume de pesagens', 'url'=>'pesagens.php',
              'pagina'=>'pesagens',  'desc'=>'Quanto cada cliente usa'],
         ]],
 
         ['rotulo'=>'Sistema', 'itens'=>[
-            ['rotulo'=>'CatÃ¡logo',      'url'=>'catalogo.php',
-             'pagina'=>'catalogo',      'desc'=>'Softwares, tipos e mÃ³dulos'],
-            ['rotulo'=>'VersÃµes',       'url'=>'versoes.php',
+            ['rotulo'=>'Catálogo',      'url'=>'catalogo.php',
+             'pagina'=>'catalogo',      'desc'=>'Softwares, tipos e módulos'],
+            ['rotulo'=>'Versões',       'url'=>'versoes.php',
              'pagina'=>'versoes',       'desc'=>'Instaladores para download'],
-            ['rotulo'=>'Tabela de preÃ§os','url'=>'precos.php',
-             'pagina'=>'precos',        'desc'=>'Anuidade e perpÃ©tua por tipo'],
-            ['rotulo'=>'UsuÃ¡rios',      'url'=>'usuarios.php',
+            ['rotulo'=>'Tabela de preços','url'=>'precos.php',
+             'pagina'=>'precos',        'desc'=>'Anuidade e perpétua por tipo'],
+            ['rotulo'=>'Usuários',      'url'=>'usuarios.php',
              'pagina'=>'usuarios',      'desc'=>'Logins administrativos'],
-            ['rotulo'=>'ConfiguraÃ§Ãµes', 'url'=>'configuracoes.php',
-             'pagina'=>'config',        'desc'=>'E-mail, avisos e padrÃµes'],
+            ['rotulo'=>'Configurações', 'url'=>'configuracoes.php',
+             'pagina'=>'config',        'desc'=>'E-mail, avisos e padrões'],
         ]],
     ];
 }
@@ -106,7 +106,7 @@ function trocas_pendentes(): int {
     return $n;
 }
 
-/** Quantos autocadastros aguardam conferÃªncia. Vira bolinha no menu. */
+/** Quantos autocadastros aguardam conferência. Vira bolinha no menu. */
 function autocadastros_pendentes(): int {
     static $n = null;
     if ($n !== null) return $n;
@@ -127,7 +127,7 @@ function abre_pagina(string $titulo, string $pagina): void {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title><?= e($titulo) ?> Â· <?= e(APP_NOME) ?></title>
+  <title><?= e($titulo) ?> · <?= e(APP_NOME) ?></title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/estilo.css">
@@ -191,7 +191,7 @@ function abre_pagina(string $titulo, string $pagina): void {
 </head>
 <body>
   <div class="topo">
-    <div class="marca">TOTAL<b>SCALE</b> Â· LICENÃ‡AS</div>
+    <div class="marca">TOTAL<b>SCALE</b> · LICENÇAS</div>
     <div class="usuario">
       <?= e($u['nome']) ?> (<?= e($u['papel']) ?>)
       <a href="logout.php">sair</a>
@@ -246,24 +246,21 @@ function fecha_pagina(): void {
     ?>
   </div>
   <script>
-    /* O matchMedia('(hover: none)') usado antes
-       falha em muitos celulares, que reportam hover como disponivel -
-       e ai o menu so aparecia com o dedo pressionado e sumia ao
-       soltar. Aqui detectamos o TOQUE em si, que e inequivoco. */
+    /* O matchMedia('(hover: none)') usado antes falha em muitos
+       celulares, que reportam hover como disponivel - e ai o menu so
+       aparecia com o dedo pressionado e sumia ao soltar. Aqui
+       detectamos o TOQUE em si, que e inequivoco. */
     (function () {
       var ehToque = false;
+      var ultimoToque = 0;
 
       document.addEventListener('touchstart', function () {
         ehToque = true;
-        document.body.classList.add('toque');
-      }, true);
-
-      // mouse de verdade (aparelho hibrido) volta ao hover
-      var ultimoToque = 0;
-      document.addEventListener('touchstart', function () {
         ultimoToque = Date.now();
+        document.body.classList.add('toque');
       }, { passive: true, capture: true });
 
+      // mouse de verdade (aparelho hibrido) volta ao hover
       document.addEventListener('mousemove', function (ev) {
         if ((Date.now() - ultimoToque) < 800) return;
         if (ev.movementX || ev.movementY) {
@@ -302,4 +299,3 @@ function fecha_pagina(): void {
 </html>
 <?php
 }
-root@admin:~#
