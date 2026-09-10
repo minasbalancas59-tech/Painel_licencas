@@ -25,9 +25,9 @@ function menu_estrutura(string $papel): array {
         // revendedor: tres telas, sem submenu - agrupar tres itens seria
         // esconder o que ja cabia na tela
         return [
-            ['rotulo'=>'Minhas licenças', 'url'=>'minhas.php',   'pagina'=>'minhas'],
+            ['rotulo'=>'Minhas licenÃ§as', 'url'=>'minhas.php',   'pagina'=>'minhas'],
             ['rotulo'=>'Meus clientes',   'url'=>'clientes.php', 'pagina'=>'clientes'],
-            ['rotulo'=>'Máquinas',        'url'=>'maquinas.php', 'pagina'=>'maquinas'],
+            ['rotulo'=>'MÃ¡quinas',        'url'=>'maquinas.php', 'pagina'=>'maquinas'],
         ];
     }
 
@@ -36,22 +36,22 @@ function menu_estrutura(string $papel): array {
 
         ['rotulo'=>'Comercial', 'itens'=>[
             ['rotulo'=>'Financeiro',   'url'=>'financeiro.php',
-             'pagina'=>'financeiro',   'desc'=>'Receita e previsão de renovação'],
+             'pagina'=>'financeiro',   'desc'=>'Receita e previsÃ£o de renovaÃ§Ã£o'],
             ['rotulo'=>'Clientes',     'url'=>'clientes.php',
              'pagina'=>'clientes',     'desc'=>'Cadastro, contatos e uso'],
             ['rotulo'=>'Revendedores', 'url'=>'revendedores.php',
              'pagina'=>'revendedores', 'desc'=>'Parceiros e estoque deles'],
             ['rotulo'=>'Autocadastros','url'=>'autocadastros.php',
-             'pagina'=>'autocadastros','desc'=>'Clientes registrados na ativação',
+             'pagina'=>'autocadastros','desc'=>'Clientes registrados na ativaÃ§Ã£o',
              'contador'=>'autocadastros_pendentes'],
         ]],
 
-        ['rotulo'=>'Licenças', 'itens'=>[
-            ['rotulo'=>'Emitir licença',   'url'=>'emitir.php',
+        ['rotulo'=>'LicenÃ§as', 'itens'=>[
+            ['rotulo'=>'Emitir licenÃ§a',   'url'=>'emitir.php',
              'pagina'=>'emitir',           'desc'=>'Gerar uma chave nova'],
-            ['rotulo'=>'Licenças emitidas','url'=>'licencas.php',
+            ['rotulo'=>'LicenÃ§as emitidas','url'=>'licencas.php',
              'pagina'=>'licencas',         'desc'=>'Acompanhar, renovar, revogar'],
-            ['rotulo'=>'Ativação offline', 'url'=>'offline.php',
+            ['rotulo'=>'AtivaÃ§Ã£o offline', 'url'=>'offline.php',
              'pagina'=>'offline',          'desc'=>'Para PC sem internet'],
             ['rotulo'=>'Trocas de cliente','url'=>'trocas.php',
              'pagina'=>'trocas',           'desc'=>'Pedidos dos revendedores',
@@ -60,28 +60,28 @@ function menu_estrutura(string $papel): array {
 
         ['rotulo'=>'Monitoramento', 'itens'=>[
             ['rotulo'=>'Atividade',    'url'=>'atividade.php',
-             'pagina'=>'atividade',    'desc'=>'Tentativas de ativação e erros'],
-            ['rotulo'=>'Revalidações', 'url'=>'revalidacoes.php',
-             'pagina'=>'revalidacoes', 'desc'=>'Quem está reportando ao servidor'],
-            ['rotulo'=>'Máquinas',  'url'=>'maquinas.php',
-             'pagina'=>'maquinas',  'desc'=>'Onde o software está rodando'],
-            ['rotulo'=>'Relatório', 'url'=>'relatorio.php',
-             'pagina'=>'relatorio', 'desc'=>'Auditoria de ações'],
+             'pagina'=>'atividade',    'desc'=>'Tentativas de ativaÃ§Ã£o e erros'],
+            ['rotulo'=>'RevalidaÃ§Ãµes', 'url'=>'revalidacoes.php',
+             'pagina'=>'revalidacoes', 'desc'=>'Quem estÃ¡ reportando ao servidor'],
+            ['rotulo'=>'MÃ¡quinas',  'url'=>'maquinas.php',
+             'pagina'=>'maquinas',  'desc'=>'Onde o software estÃ¡ rodando'],
+            ['rotulo'=>'RelatÃ³rio', 'url'=>'relatorio.php',
+             'pagina'=>'relatorio', 'desc'=>'Auditoria de aÃ§Ãµes'],
             ['rotulo'=>'Volume de pesagens', 'url'=>'pesagens.php',
              'pagina'=>'pesagens',  'desc'=>'Quanto cada cliente usa'],
         ]],
 
         ['rotulo'=>'Sistema', 'itens'=>[
-            ['rotulo'=>'Catálogo',      'url'=>'catalogo.php',
-             'pagina'=>'catalogo',      'desc'=>'Softwares, tipos e módulos'],
-            ['rotulo'=>'Versões',       'url'=>'versoes.php',
+            ['rotulo'=>'CatÃ¡logo',      'url'=>'catalogo.php',
+             'pagina'=>'catalogo',      'desc'=>'Softwares, tipos e mÃ³dulos'],
+            ['rotulo'=>'VersÃµes',       'url'=>'versoes.php',
              'pagina'=>'versoes',       'desc'=>'Instaladores para download'],
-            ['rotulo'=>'Tabela de preços','url'=>'precos.php',
-             'pagina'=>'precos',        'desc'=>'Anuidade e perpétua por tipo'],
-            ['rotulo'=>'Usuários',      'url'=>'usuarios.php',
+            ['rotulo'=>'Tabela de preÃ§os','url'=>'precos.php',
+             'pagina'=>'precos',        'desc'=>'Anuidade e perpÃ©tua por tipo'],
+            ['rotulo'=>'UsuÃ¡rios',      'url'=>'usuarios.php',
              'pagina'=>'usuarios',      'desc'=>'Logins administrativos'],
-            ['rotulo'=>'Configurações', 'url'=>'configuracoes.php',
-             'pagina'=>'config',        'desc'=>'E-mail, avisos e padrões'],
+            ['rotulo'=>'ConfiguraÃ§Ãµes', 'url'=>'configuracoes.php',
+             'pagina'=>'config',        'desc'=>'E-mail, avisos e padrÃµes'],
         ]],
     ];
 }
@@ -106,7 +106,7 @@ function trocas_pendentes(): int {
     return $n;
 }
 
-/** Quantos autocadastros aguardam conferência. Vira bolinha no menu. */
+/** Quantos autocadastros aguardam conferÃªncia. Vira bolinha no menu. */
 function autocadastros_pendentes(): int {
     static $n = null;
     if ($n !== null) return $n;
@@ -127,7 +127,7 @@ function abre_pagina(string $titulo, string $pagina): void {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title><?= e($titulo) ?> · <?= e(APP_NOME) ?></title>
+  <title><?= e($titulo) ?> Â· <?= e(APP_NOME) ?></title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="assets/estilo.css">
@@ -152,10 +152,17 @@ function abre_pagina(string $titulo, string $pagina): void {
       border-radius: var(--radius); padding: 6px;
       box-shadow: 0 8px 24px rgba(0,0,0,.45);
     }
-    /* hover no desktop, clique no toque - o :focus-within cobre teclado */
+    /* No desktop o hover basta. No toque, o :hover dispara enquanto o
+       dedo esta pressionado e some ao soltar - por isso a classe
+       .aberto, controlada por JS, e quem segura o menu aberto.
+       O body.toque desliga o hover puro para nao piscar. */
     .nav .grupo:hover .submenu,
     .nav .grupo:focus-within .submenu,
     .nav .grupo.aberto .submenu { display: block; }
+
+    body.toque .nav .grupo:hover .submenu,
+    body.toque .nav .grupo:focus-within .submenu { display: none; }
+    body.toque .nav .grupo.aberto .submenu { display: block; }
 
     .nav .submenu a {
       display: block; padding: 9px 12px; border-radius: 4px;
@@ -184,7 +191,7 @@ function abre_pagina(string $titulo, string $pagina): void {
 </head>
 <body>
   <div class="topo">
-    <div class="marca">TOTAL<b>SCALE</b> · LICENÇAS</div>
+    <div class="marca">TOTAL<b>SCALE</b> Â· LICENÃ‡AS</div>
     <div class="usuario">
       <?= e($u['nome']) ?> (<?= e($u['papel']) ?>)
       <a href="logout.php">sair</a>
@@ -239,20 +246,55 @@ function fecha_pagina(): void {
     ?>
   </div>
   <script>
-    // No toque nao existe hover: o primeiro clique no grupo abre o
-    // submenu em vez de navegar direto para a primeira tela dele.
+    /* O matchMedia('(hover: none)') usado antes
+       falha em muitos celulares, que reportam hover como disponivel -
+       e ai o menu so aparecia com o dedo pressionado e sumia ao
+       soltar. Aqui detectamos o TOQUE em si, que e inequivoco. */
     (function () {
-      if (!window.matchMedia('(hover: none)').matches) return;
+      var ehToque = false;
+
+      document.addEventListener('touchstart', function () {
+        ehToque = true;
+        document.body.classList.add('toque');
+      }, true);
+
+      // mouse de verdade (aparelho hibrido) volta ao hover
+      var ultimoToque = 0;
+      document.addEventListener('touchstart', function () {
+        ultimoToque = Date.now();
+      }, { passive: true, capture: true });
+
+      document.addEventListener('mousemove', function (ev) {
+        if ((Date.now() - ultimoToque) < 800) return;
+        if (ev.movementX || ev.movementY) {
+          ehToque = false;
+          document.body.classList.remove('toque');
+        }
+      }, { passive: true });
+
+      function fecharTodos(exceto) {
+        document.querySelectorAll('.nav .grupo.aberto').forEach(function (o) {
+          if (o !== exceto) o.classList.remove('aberto');
+        });
+      }
+
       document.querySelectorAll('.nav .grupo > .rotulo').forEach(function (r) {
         r.addEventListener('click', function (ev) {
+          if (!ehToque) return;              // desktop: segue o link
           var g = r.parentElement;
           if (!g.classList.contains('aberto')) {
-            ev.preventDefault();
-            document.querySelectorAll('.nav .grupo.aberto')
-                    .forEach(function (o) { o.classList.remove('aberto'); });
+            ev.preventDefault();             // 1o toque abre o submenu
+            ev.stopPropagation();
+            fecharTodos(g);
             g.classList.add('aberto');
           }
+          // 2o toque no mesmo rotulo navega normalmente
         });
+      });
+
+      document.addEventListener('click', function (ev) {
+        if (!ev.target.closest || !ev.target.closest('.nav .grupo'))
+          fecharTodos(null);
       });
     })();
   </script>
@@ -260,3 +302,4 @@ function fecha_pagina(): void {
 </html>
 <?php
 }
+root@admin:~#
